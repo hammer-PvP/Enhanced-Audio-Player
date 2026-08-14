@@ -1,5 +1,5 @@
 import {MODULE_ID, SOCKET_CHANNEL, SOCKET_TYPES} from "./constants.js";
-import {clamp} from "./config.js";
+import {clamp, effectiveRange} from "./config.js";
 
 function sessionKey(playlistId, soundId) {
   return `${playlistId}.${soundId}`;
@@ -32,10 +32,32 @@ export class PlaybackRuntime {
     return this.#sessions.has(sessionKey(playlistId, soundId));
   }
 
+  isPaused(playlistId, soundId) {
+    return Boolean(this.getSession(playlistId, soundId)?.paused);
+  }
+
+  getPosition(playlistId, soundId) {
+    const session = this.getSession(playlistId, soundId);
+    const resolved = resolveSound(playlistId, soundId);
+    const nativeTime = Number(resolved?.sound?.sound?.currentTime);
+    if (session?.paused) return Number(session.offset) || 0;
+    if (Number.isFinite(nativeTime)) return nativeTime;
+    return Number(session?.offset) || 0;
+  }
+
   async playFromGM(playlist, playlistSound, config, duration) {
-    const rangeStart = config.fullTrack ? 0 : config.start;
-    const rangeEnd = config.fullTrack ? duration : (config.end ?? duration);
-    const loop = !config.fullTrack && Boolean(config.loop);
+    const range = effectiveRange(config, duration);
+    if (!range.valid) throw new Error("Invalid playback range");
+
+    const existing = this.getSession(playlist.id, playlistSound.id);
+    if (existing?.paused) {
+      const unchanged = existing.rangeStart === range.start
+        && existing.rangeEnd === range.end
+        && existing.loop === range.loop
+        && Number(existing.fadeIn) === Number(range.fadeIn)
+        && Number(existing.fadeOut) === Number(range.fadeOut);
+      if (unchanged) return this.resumeFromGM(playlist.id, playlistSound.id);
+    }
 
     const command = {
       type: SOCKET_TYPES.PLAY,
@@ -43,15 +65,17 @@ export class PlaybackRuntime {
       playlistId: playlist.id,
       soundId: playlistSound.id,
       controllerUserId: game.user.id,
-      rangeStart,
-      rangeEnd,
-      offset: rangeStart,
-      loop,
-      fadeIn: config.fadeIn,
-      fadeOut: config.fadeOut
+      trackDuration: Number(duration) || 0,
+      rangeStart: range.start,
+      rangeEnd: range.end,
+      offset: range.start,
+      loop: range.loop,
+      fadeIn: range.fadeIn,
+      fadeOut: range.fadeOut
     };
 
-    // Preserve Foundry's own playlist mode and playing-state behavior first.
+    // Keep the shared Foundry PlaylistSound state authoritative for whether the
+    // track is active. Enhanced playback only controls the native Sound instance.
     await playlist.playSound(playlistSound);
 
     await this.#acceptPlay(command);
@@ -59,13 +83,38 @@ export class PlaybackRuntime {
     return command;
   }
 
-  async playNativeFromGM(playlist, playlistSound) {
-    const hadEnhancedSession = this.isEnhanced(playlist.id, playlistSound.id);
-    if (hadEnhancedSession || playlistSound.playing) {
-      await playlist.stopSound(playlistSound);
-    }
-    await this.stopLocalSession(playlist.id, playlistSound.id, {stopAudio: false, broadcast: true});
-    return playlist.playSound(playlistSound);
+  async pauseFromGM(playlistId, soundId) {
+    const session = this.getSession(playlistId, soundId);
+    if (!session || session.paused) return;
+
+    const command = {
+      type: SOCKET_TYPES.PAUSE,
+      playlistId,
+      soundId,
+      sessionId: session.sessionId,
+      controllerUserId: game.user.id,
+      offset: clamp(this.getPosition(playlistId, soundId), session.rangeStart, session.rangeEnd)
+    };
+
+    await this.#acceptPause(command);
+    game.socket.emit(SOCKET_CHANNEL, command);
+  }
+
+  async resumeFromGM(playlistId, soundId) {
+    const session = this.getSession(playlistId, soundId);
+    if (!session?.paused) return;
+
+    const command = {
+      type: SOCKET_TYPES.RESUME,
+      playlistId,
+      soundId,
+      sessionId: session.sessionId,
+      controllerUserId: game.user.id,
+      offset: clamp(Number(session.offset), session.rangeStart, session.rangeEnd)
+    };
+
+    await this.#acceptResume(command);
+    game.socket.emit(SOCKET_CHANNEL, command);
   }
 
   async stopFromGM(playlist, playlistSound) {
@@ -93,26 +142,19 @@ export class PlaybackRuntime {
   async stopLocalSession(playlistId, soundId, {stopAudio = false, broadcast = false} = {}) {
     const key = sessionKey(playlistId, soundId);
     const session = this.#sessions.get(key);
-    if (!session) {
-      if (broadcast) {
-        game.socket.emit(SOCKET_CHANNEL, {
-          type: SOCKET_TYPES.STOP_LOCAL,
-          playlistId,
-          soundId,
-          controllerUserId: game.user.id
-        });
-      }
-      return;
-    }
 
-    session.active = false;
-    this.#clearSchedules(session);
-    this.#sessions.delete(key);
+    if (session) {
+      session.active = false;
+      session.paused = false;
+      session.generation += 1;
+      this.#clearSchedules(session);
+      this.#sessions.delete(key);
+    }
 
     if (stopAudio) {
       const resolved = resolveSound(playlistId, soundId);
       const nativeSound = resolved?.sound?.sound;
-      if (nativeSound?.playing) {
+      if (nativeSound?.playing || Number(nativeSound?.pausedTime) > 0) {
         try {
           await nativeSound.stop();
         } catch (error) {
@@ -129,26 +171,35 @@ export class PlaybackRuntime {
         controllerUserId: game.user.id
       });
     }
-    this.#onSessionChanged();
+
+    if (session) this.#onSessionChanged();
   }
 
   async onPlaylistSoundUpdated(playlistSound, changed) {
     const playlistId = playlistSound.parent?.id;
     if (!playlistId) return;
-    const key = sessionKey(playlistId, playlistSound.id);
-    const session = this.#sessions.get(key);
+    const session = this.getSession(playlistId, playlistSound.id);
 
     if (changed.playing === false) {
       await this.stopLocalSession(playlistId, playlistSound.id, {stopAudio: false, broadcast: false});
       return;
     }
 
-    // If the enhanced socket arrived before the native document update, core sync may
-    // have just restarted ordinary playback. Re-apply the enhanced session once.
+    // Core document synchronization may occur after our socket command. Re-apply
+    // the local enhanced state once the native PlaylistSound confirms it is active.
     if (changed.playing === true && session && !session.nativeStateConfirmed) {
       session.nativeStateConfirmed = true;
-      queueMicrotask(() => void this.#applyPlayback(session, session.offset, {restart: true}));
+      queueMicrotask(() => {
+        if (!session.active) return;
+        if (session.paused) this.#pauseNative(session);
+        else void this.#applyPlayback(session, session.offset, {restart: true});
+      });
+      return;
     }
+
+    // Keep a module-paused Sound paused if another PlaylistSound update causes
+    // Foundry to synchronize its local native Sound instance.
+    if (session?.paused) queueMicrotask(() => this.#pauseNative(session));
   }
 
   async onPlaylistSoundDeleted(playlistSound) {
@@ -161,10 +212,17 @@ export class PlaybackRuntime {
     if (!payload || typeof payload !== "object") return;
     const controller = payload.controllerUserId ? game.users?.get(payload.controllerUserId) : null;
     if (!controller?.isGM) return;
+
     try {
       switch (payload.type) {
         case SOCKET_TYPES.PLAY:
           await this.#acceptPlay(payload);
+          break;
+        case SOCKET_TYPES.PAUSE:
+          await this.#acceptPause(payload);
+          break;
+        case SOCKET_TYPES.RESUME:
+          await this.#acceptResume(payload);
           break;
         case SOCKET_TYPES.SEEK:
           await this.#acceptSeek(payload);
@@ -187,13 +245,20 @@ export class PlaybackRuntime {
     if (prior && prior.sessionId === command.sessionId) return;
     if (prior) {
       prior.active = false;
+      prior.generation += 1;
       this.#clearSchedules(prior);
     }
 
+    const rangeStart = Math.max(0, Number(command.rangeStart) || 0);
+    const rangeEnd = Math.max(rangeStart, Number(command.rangeEnd) || 0);
     const session = {
       ...command,
+      rangeStart,
+      rangeEnd,
+      trackDuration: Math.max(rangeEnd, Number(command.trackDuration) || 0),
       active: true,
-      offset: clamp(Number(command.offset), Number(command.rangeStart), Number(command.rangeEnd)),
+      paused: false,
+      offset: clamp(Number(command.offset), rangeStart, rangeEnd),
       scheduleHandles: new Set(),
       generation: 0,
       nativeStateConfirmed: Boolean(resolved.sound.playing)
@@ -204,16 +269,50 @@ export class PlaybackRuntime {
     this.#onSessionChanged();
   }
 
-  async #acceptSeek(command) {
+  async #acceptPause(command) {
     const session = this.getSession(command.playlistId, command.soundId);
-    if (!session || session.sessionId !== command.sessionId) return;
+    if (!session || session.sessionId !== command.sessionId || !session.active) return;
+
     session.offset = clamp(Number(command.offset), session.rangeStart, session.rangeEnd);
-    await this.#applyPlayback(session, session.offset, {restart: true});
+    session.paused = true;
+    session.generation += 1;
+    this.#clearSchedules(session);
+    this.#pauseNative(session);
     this.#onSessionChanged();
   }
 
+  async #acceptResume(command) {
+    const session = this.getSession(command.playlistId, command.soundId);
+    if (!session || session.sessionId !== command.sessionId || !session.active) return;
+
+    session.offset = clamp(Number(command.offset), session.rangeStart, session.rangeEnd);
+    session.paused = false;
+    await this.#applyPlayback(session, session.offset, {restart: false});
+    this.#onSessionChanged();
+  }
+
+  async #acceptSeek(command) {
+    const session = this.getSession(command.playlistId, command.soundId);
+    if (!session || session.sessionId !== command.sessionId || !session.active) return;
+
+    session.offset = clamp(Number(command.offset), session.rangeStart, session.rangeEnd);
+    if (!session.paused) await this.#applyPlayback(session, session.offset, {restart: true});
+    this.#onSessionChanged();
+  }
+
+  #pauseNative(session) {
+    const resolved = resolveSound(session.playlistId, session.soundId);
+    const nativeSound = resolved?.sound?.sound;
+    if (!nativeSound?.playing) return;
+    try {
+      nativeSound.pause();
+    } catch (error) {
+      console.warn(`${MODULE_ID} | Failed to pause native Sound`, error);
+    }
+  }
+
   async #applyPlayback(session, requestedOffset, {restart = false} = {}) {
-    if (!session.active) return;
+    if (!session.active || session.paused) return;
     const resolved = resolveSound(session.playlistId, session.soundId);
     if (!resolved) {
       await this.stopLocalSession(session.playlistId, session.soundId);
@@ -231,20 +330,18 @@ export class PlaybackRuntime {
     const nativeSound = playlistSound.sound;
     if (!nativeSound) return;
 
-    const duration = Number(nativeSound.duration) || 0;
-    const rangeStart = clamp(Number(session.rangeStart), 0, duration);
-    const rangeEnd = clamp(Number(session.rangeEnd), rangeStart, duration);
-    if (rangeEnd <= rangeStart) return;
+    // The GM-provided trackDuration was captured from the full source before
+    // enhanced playback began. Do not rewrite it from a transient limited cycle.
+    const trackDuration = Math.max(0, Number(session.trackDuration) || Number(nativeSound.duration) || 0);
+    const rangeStart = Math.max(0, Number(session.rangeStart) || 0);
+    const rangeEnd = Math.max(rangeStart, Number(session.rangeEnd) || 0);
+    if (trackDuration <= 0 || rangeStart >= trackDuration || rangeEnd > trackDuration || rangeEnd <= rangeStart) return;
 
-    session.rangeStart = rangeStart;
-    session.rangeEnd = rangeEnd;
     session.offset = clamp(Number(requestedOffset), rangeStart, rangeEnd);
     session.generation += 1;
     const generation = session.generation;
     this.#clearSchedules(session);
 
-    // Pause rather than stop to avoid presenting a local natural-end event to the
-    // Playlist document while we replace core playback with enhanced playback.
     if (restart && nativeSound.playing) {
       try {
         nativeSound.pause();
@@ -257,7 +354,7 @@ export class PlaybackRuntime {
   }
 
   async #playCycle(session, offset, generation) {
-    if (!session.active || generation !== session.generation) return;
+    if (!session.active || session.paused || generation !== session.generation) return;
     const resolved = resolveSound(session.playlistId, session.soundId);
     const playlistSound = resolved?.sound;
     const nativeSound = playlistSound?.sound;
@@ -274,16 +371,19 @@ export class PlaybackRuntime {
     const fadeOutSec = Math.max(0, Math.min(Number(session.fadeOut) || 0, Math.max(0, remaining - fadeInMs / 1000)));
     const targetVolume = Number.isFinite(Number(playlistSound.volume)) ? Number(playlistSound.volume) : 1;
 
-    const canUseNativeLoop = Boolean(session.loop && nativeSound.isBuffer && fadeInMs === 0 && fadeOutSec === 0 && start === session.rangeStart);
+    const canUseNativeLoop = Boolean(
+      session.loop
+      && nativeSound.isBuffer
+      && fadeInMs === 0
+      && fadeOutSec === 0
+      && start === session.rangeStart
+    );
 
     const onended = () => {
-      if (!session.active || generation !== session.generation) return;
+      if (!session.active || session.paused || generation !== session.generation) return;
       if (canUseNativeLoop) return;
-      if (session.loop) {
-        void this.#playCycle(session, session.rangeStart, generation);
-      } else {
-        void this.#finishSession(session);
-      }
+      if (session.loop) void this.#playCycle(session, session.rangeStart, generation);
+      else void this.#finishSession(session);
     };
 
     const options = {
@@ -309,12 +409,18 @@ export class PlaybackRuntime {
       return;
     }
 
+    // A pause/seek can race the asynchronous start. Respect the newest generation.
+    if (!session.active || session.paused || generation !== session.generation) {
+      if (nativeSound.playing) nativeSound.pause();
+      return;
+    }
+
     if (fadeOutSec > 0 && !canUseNativeLoop) {
       const fadeAt = session.rangeEnd - fadeOutSec;
       try {
         const handle = nativeSound.schedule(() => {
           session.scheduleHandles.delete(handle);
-          if (!session.active || generation !== session.generation) return;
+          if (!session.active || session.paused || generation !== session.generation) return;
           void nativeSound.fade(0, {
             duration: fadeOutSec * 1000,
             from: targetVolume,
@@ -333,10 +439,11 @@ export class PlaybackRuntime {
     const key = sessionKey(session.playlistId, session.soundId);
     this.#clearSchedules(session);
     session.active = false;
+    session.paused = false;
     this.#sessions.delete(key);
     this.#onSessionChanged();
 
-    // Only the GM who initiated playback changes the shared Playlist document.
+    // Only the initiating GM changes the shared Playlist document at natural end.
     if (game.user?.isGM && game.user.id === session.controllerUserId) {
       const resolved = resolveSound(session.playlistId, session.soundId);
       if (resolved?.sound?.playing) {
@@ -361,7 +468,7 @@ export class PlaybackRuntime {
       try {
         nativeSound.unschedule(handle);
       } catch (_error) {
-        // Scheduling can already have resolved naturally; cleanup is best-effort.
+        // Scheduling may already have resolved naturally; cleanup is best-effort.
       }
     }
     session.scheduleHandles?.clear?.();

@@ -5,6 +5,7 @@
   "EAP.LoadError": "The selected audio could not be loaded.",
   "EAP.SelectedTrack": "Selected Track",
   "EAP.Play": "Play",
+  "EAP.Pause": "Pause",
   "EAP.Stop": "Stop",
   "EAP.FullTrack": "Full Track",
   "EAP.Start": "Start",
@@ -12,10 +13,18 @@
   "EAP.LoopRange": "Loop Range",
   "EAP.FadeIn": "Fade In",
   "EAP.FadeOut": "Fade Out",
+  "EAP.Current": "Current",
+  "EAP.Duration": "Duration",
+  "EAP.ResetTrack": "Reset Track",
+  "EAP.InvalidRangeHint": "The saved custom range is outside this track duration. Adjust Start/End or reset the track.",
   "EAP.Status.Idle": "Idle",
   "EAP.Status.Native": "Native playback",
   "EAP.Status.Enhanced": "Enhanced playback",
-  "EAP.Notifications.InvalidRange": "Enhanced Audio Player: the selected playback range is invalid.",
+  "EAP.Status.Paused": "Paused",
+  "EAP.Notifications.InvalidRange": "Enhanced Audio Player: the selected playback range is invalid for this track.",
   "EAP.Notifications.PlayFailed": "Enhanced Audio Player could not start playback.",
-  "EAP.Notifications.StopFailed": "Enhanced Audio Player could not stop playback."
+  "EAP.Notifications.PauseFailed": "Enhanced Audio Player could not pause playback.",
+  "EAP.Notifications.StopFailed": "Enhanced Audio Player could not stop playback.",
+  "EAP.Notifications.ResetComplete": "Enhanced Audio Player: track settings reset.",
+  "EAP.Notifications.ResetFailed": "Enhanced Audio Player could not reset this track."
 }

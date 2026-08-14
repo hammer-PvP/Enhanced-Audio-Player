@@ -5,6 +5,7 @@
   "EAP.LoadError": "Não foi possível carregar o áudio selecionado.",
   "EAP.SelectedTrack": "Faixa Selecionada",
   "EAP.Play": "Play",
+  "EAP.Pause": "Pausar",
   "EAP.Stop": "Stop",
   "EAP.FullTrack": "Faixa Completa",
   "EAP.Start": "Início",
@@ -12,10 +13,18 @@
   "EAP.LoopRange": "Loop do Trecho",
   "EAP.FadeIn": "Fade In",
   "EAP.FadeOut": "Fade Out",
+  "EAP.Current": "Atual",
+  "EAP.Duration": "Duração",
+  "EAP.ResetTrack": "Resetar Faixa",
+  "EAP.InvalidRangeHint": "O trecho salvo está fora da duração desta faixa. Ajuste Início/Fim ou resete a faixa.",
   "EAP.Status.Idle": "Parado",
   "EAP.Status.Native": "Reprodução nativa",
   "EAP.Status.Enhanced": "Reprodução aprimorada",
-  "EAP.Notifications.InvalidRange": "Enhanced Audio Player: o intervalo de reprodução selecionado é inválido.",
+  "EAP.Status.Paused": "Pausado",
+  "EAP.Notifications.InvalidRange": "Enhanced Audio Player: o intervalo selecionado é inválido para esta faixa.",
   "EAP.Notifications.PlayFailed": "Enhanced Audio Player não conseguiu iniciar a reprodução.",
-  "EAP.Notifications.StopFailed": "Enhanced Audio Player não conseguiu parar a reprodução."
+  "EAP.Notifications.PauseFailed": "Enhanced Audio Player não conseguiu pausar a reprodução.",
+  "EAP.Notifications.StopFailed": "Enhanced Audio Player não conseguiu parar a reprodução.",
+  "EAP.Notifications.ResetComplete": "Enhanced Audio Player: configurações da faixa resetadas.",
+  "EAP.Notifications.ResetFailed": "Enhanced Audio Player não conseguiu resetar esta faixa."
 }

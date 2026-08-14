@@ -13,6 +13,8 @@ export const DEFAULT_PLAYBACK_CONFIG = Object.freeze({
 
 export const SOCKET_TYPES = Object.freeze({
   PLAY: "play",
+  PAUSE: "pause",
+  RESUME: "resume",
   SEEK: "seek",
   STOP_LOCAL: "stopLocal"
 });

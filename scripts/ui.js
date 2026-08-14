@@ -1,5 +1,5 @@
 import {MODULE_ID} from "./constants.js";
-import {effectiveRange, normalizePlaybackConfig, readPlaybackConfig, writePlaybackConfig} from "./config.js";
+import {clamp, effectiveRange, readPlaybackConfig, resetPlaybackConfig, writePlaybackConfig} from "./config.js";
 
 const PANEL_CLASS = "eap-panel";
 const SELECTED_CLASS = "eap-selected-track";
@@ -13,7 +13,9 @@ export class EnhancedAudioPlayerUI {
   #renderToken = 0;
   #progressFrame = null;
   #saving = false;
+  #isSeeking = false;
   #boundRoots = new WeakSet();
+  #durationCache = new Map();
 
   constructor({selection, runtime}) {
     this.#selection = selection;
@@ -33,11 +35,13 @@ export class EnhancedAudioPlayerUI {
     panel.dataset.moduleId = MODULE_ID;
     element.append(panel);
     this.#panel = panel;
+    this.#isSeeking = false;
 
     if (!this.#boundRoots.has(element)) {
       element.addEventListener("click", event => this.#onDirectoryClick(event));
       this.#boundRoots.add(element);
     }
+
     this.#highlightSelection();
     void this.renderPanel();
     this.#startProgressLoop();
@@ -56,18 +60,21 @@ export class EnhancedAudioPlayerUI {
     const {playlist, sound} = resolved;
     this.#panel.innerHTML = this.#loadingPanelHtml(sound.name);
 
-    let duration = 0;
+    let duration = this.#cachedDuration(playlist, sound);
     let loadError = false;
     try {
       await sound.load();
-      duration = Number(sound.sound?.duration) || 0;
+      const candidate = Number(sound.sound?.duration);
+      if (Number.isFinite(candidate) && candidate > 0) {
+        duration = this.#rememberDuration(playlist, sound, candidate);
+      }
     } catch (error) {
       loadError = true;
       console.warn(`${MODULE_ID} | Unable to load selected sound`, error);
     }
 
     if (token !== this.#renderToken || !this.#panel?.isConnected) return;
-    const config = readPlaybackConfig(sound, duration);
+    const config = readPlaybackConfig(sound);
     this.#panel.innerHTML = this.#configuredPanelHtml({playlist, sound, config, duration, loadError});
     this.#attachPanelListeners({playlist, sound, duration});
     this.#updateProgress();
@@ -86,6 +93,24 @@ export class EnhancedAudioPlayerUI {
     void this.renderPanel();
   }
 
+  #durationKey(playlist, sound) {
+    return `${playlist.id}.${sound.id}.${String(sound.path ?? "")}`;
+  }
+
+  #cachedDuration(playlist, sound) {
+    return this.#durationCache.get(this.#durationKey(playlist, sound)) ?? 0;
+  }
+
+  #rememberDuration(playlist, sound, candidate) {
+    const key = this.#durationKey(playlist, sound);
+    const prior = Number(this.#durationCache.get(key)) || 0;
+    // Total source duration should be stable. Keeping the greatest positive value
+    // prevents a later limited playback cycle from contaminating track metadata.
+    const duration = Math.max(prior, Number(candidate) || 0);
+    if (duration > 0) this.#durationCache.set(key, duration);
+    return duration;
+  }
+
   #onDirectoryClick(event) {
     if (!(event.target instanceof Element)) return;
     if (event.target.closest(`.${PANEL_CLASS}`)) return;
@@ -97,6 +122,7 @@ export class EnhancedAudioPlayerUI {
 
     this.#selection.select(match.playlist.id, match.sound.id);
     this.#highlightSelection(match.row);
+    this.#isSeeking = false;
     void this.renderPanel();
   }
 
@@ -115,17 +141,10 @@ export class EnhancedAudioPlayerUI {
       const uuid = node.dataset?.uuid;
       if (uuid) {
         const parsed = this.#resolveByUuid(uuid);
-        if (parsed && this.#findParentPlaylistId(node) === parsed.playlist.id) {
-          return {...parsed, row: node};
-        }
+        if (parsed && this.#findParentPlaylistId(node) === parsed.playlist.id) return {...parsed, row: node};
       }
 
-      const ids = [
-        node.dataset?.soundId,
-        node.dataset?.documentId,
-        node.dataset?.entryId
-      ].filter(Boolean);
-
+      const ids = [node.dataset?.soundId, node.dataset?.documentId, node.dataset?.entryId].filter(Boolean);
       for (const id of ids) {
         const matches = soundIndex.get(id) ?? [];
         const playlistId = this.#findParentPlaylistId(node);
@@ -194,23 +213,29 @@ export class EnhancedAudioPlayerUI {
     if (!panel) return;
 
     panel.querySelector("[data-eap-action='play']")?.addEventListener("click", async () => {
-      await this.#persistFromPanel(sound, duration);
-      const config = readPlaybackConfig(sound, duration);
+      await this.#persistFromPanel(sound);
+      const config = readPlaybackConfig(sound);
       const range = effectiveRange(config, duration);
-      if (range.length <= 0) return ui.notifications?.warn(localize("EAP.Notifications.InvalidRange"));
+      if (!range.valid) return ui.notifications?.warn(localize("EAP.Notifications.InvalidRange"));
 
       try {
-        const requiresEnhancedRuntime = !config.fullTrack || config.fadeIn > 0 || config.fadeOut > 0;
-        if (requiresEnhancedRuntime) {
-          await this.#runtime.playFromGM(playlist, sound, config, duration);
-        } else {
-          await this.#runtime.playNativeFromGM(playlist, sound);
-        }
+        await this.#runtime.playFromGM(playlist, sound, config, duration);
       } catch (error) {
         console.error(`${MODULE_ID} | Play failed`, error);
         ui.notifications?.error(localize("EAP.Notifications.PlayFailed"));
       }
       this.#updatePlaybackStatus();
+    });
+
+    panel.querySelector("[data-eap-action='pause']")?.addEventListener("click", async () => {
+      try {
+        await this.#runtime.pauseFromGM(playlist.id, sound.id);
+      } catch (error) {
+        console.error(`${MODULE_ID} | Pause failed`, error);
+        ui.notifications?.error(localize("EAP.Notifications.PauseFailed"));
+      }
+      this.#updatePlaybackStatus();
+      this.#updateProgress();
     });
 
     panel.querySelector("[data-eap-action='stop']")?.addEventListener("click", async () => {
@@ -221,41 +246,75 @@ export class EnhancedAudioPlayerUI {
         ui.notifications?.error(localize("EAP.Notifications.StopFailed"));
       }
       this.#updatePlaybackStatus();
+      this.#updateProgress();
+    });
+
+    panel.querySelector("[data-eap-action='reset']")?.addEventListener("click", async () => {
+      try {
+        if (this.#runtime.isEnhanced(playlist.id, sound.id)) await this.#runtime.stopFromGM(playlist, sound);
+        await resetPlaybackConfig(sound);
+        ui.notifications?.info(localize("EAP.Notifications.ResetComplete"));
+        await this.renderPanel();
+      } catch (error) {
+        console.error(`${MODULE_ID} | Reset failed`, error);
+        ui.notifications?.error(localize("EAP.Notifications.ResetFailed"));
+      }
     });
 
     for (const input of panel.querySelectorAll("[data-eap-config]")) {
+      if (["start", "end"].includes(input.dataset.eapConfig)) {
+        input.addEventListener("input", () => this.#updateTimelineMarkers(duration));
+      }
+
       input.addEventListener("change", async event => {
         if (event.currentTarget?.dataset?.eapConfig === "fullTrack") this.#syncDisabledState();
-        await this.#persistFromPanel(sound, duration);
-        await this.renderPanel();
+        await this.#persistFromPanel(sound);
+        this.#updateTimelineMarkers(duration);
       });
     }
 
     const progress = panel.querySelector("[data-eap-progress]");
+    progress?.addEventListener("pointerdown", () => {
+      this.#isSeeking = true;
+    });
+    progress?.addEventListener("input", event => {
+      this.#isSeeking = true;
+      const currentLabel = panel.querySelector("[data-eap-current]");
+      if (currentLabel) currentLabel.textContent = formatTime(Number(event.currentTarget.value));
+    });
     progress?.addEventListener("change", async event => {
-      if (!this.#runtime.isEnhanced(playlist.id, sound.id)) return;
-      await this.#runtime.seekFromGM(playlist.id, sound.id, Number(event.currentTarget.value));
+      try {
+        if (!this.#runtime.isEnhanced(playlist.id, sound.id)) return;
+        await this.#runtime.seekFromGM(playlist.id, sound.id, Number(event.currentTarget.value));
+      } finally {
+        this.#isSeeking = false;
+        this.#updateProgress();
+      }
+    });
+    progress?.addEventListener("blur", () => {
+      this.#isSeeking = false;
+      this.#updateProgress();
     });
 
     this.#syncDisabledState();
+    this.#updateTimelineMarkers(duration);
   }
 
-  async #persistFromPanel(sound, duration) {
+  async #persistFromPanel(sound) {
     if (this.#saving || !this.#panel) return;
-    const current = readPlaybackConfig(sound, duration);
+    const current = readPlaybackConfig(sound);
     const values = {...current};
 
     for (const input of this.#panel.querySelectorAll("[data-eap-config]")) {
       const key = input.dataset.eapConfig;
       if (!key) continue;
       if (input.type === "checkbox") values[key] = input.checked;
-      else values[key] = Number(input.value);
+      else values[key] = input.value === "" ? null : Number(input.value);
     }
 
-    const normalized = normalizePlaybackConfig(values, duration);
     this.#saving = true;
     try {
-      await writePlaybackConfig(sound, normalized, duration);
+      await writePlaybackConfig(sound, values);
     } finally {
       this.#saving = false;
     }
@@ -269,6 +328,32 @@ export class EnhancedAudioPlayerUI {
       const input = panel.querySelector(`[data-eap-config='${key}']`);
       if (input) input.disabled = fullTrack;
     }
+    panel.querySelector("[data-eap-timeline]")?.toggleAttribute("data-full-track", fullTrack);
+  }
+
+  #updateTimelineMarkers(duration) {
+    const panel = this.#panel;
+    const timeline = panel?.querySelector("[data-eap-timeline]");
+    if (!panel || !timeline || duration <= 0) return;
+
+    const fullTrack = panel.querySelector("[data-eap-config='fullTrack']")?.checked ?? true;
+    const start = Number(panel.querySelector("[data-eap-config='start']")?.value) || 0;
+    const endRaw = Number(panel.querySelector("[data-eap-config='end']")?.value);
+    const end = Number.isFinite(endRaw) ? endRaw : duration;
+    const startVisual = clamp(start, 0, duration);
+    const endVisual = clamp(end, 0, duration);
+    const left = (startVisual / duration) * 100;
+    const right = (endVisual / duration) * 100;
+
+    timeline.style.setProperty("--eap-start-pct", `${left}%`);
+    timeline.style.setProperty("--eap-end-pct", `${right}%`);
+    timeline.style.setProperty("--eap-range-width", `${Math.max(0, right - left)}%`);
+    timeline.toggleAttribute("data-full-track", fullTrack);
+
+    const startLabel = panel.querySelector("[data-eap-marker-start-label]");
+    const endLabel = panel.querySelector("[data-eap-marker-end-label]");
+    if (startLabel) startLabel.textContent = `${localize("EAP.Start")} ${formatTime(start)}`;
+    if (endLabel) endLabel.textContent = `${localize("EAP.End")} ${formatTime(end)}`;
   }
 
   #startProgressLoop() {
@@ -290,30 +375,31 @@ export class EnhancedAudioPlayerUI {
     if (!panel || !resolved) return;
 
     const {playlist, sound} = resolved;
-    const nativeSound = sound.sound;
-    const duration = Number(nativeSound?.duration) || Number(panel.dataset.duration) || 0;
-    const config = readPlaybackConfig(sound, duration);
-    const range = effectiveRange(config, duration);
-    const activeEnhanced = this.#runtime.getSession(playlist.id, sound.id);
-
-    const min = activeEnhanced?.rangeStart ?? range.start;
-    const max = activeEnhanced?.rangeEnd ?? range.end;
-    let current = Number(nativeSound?.currentTime);
-    if (!Number.isFinite(current)) current = min;
-    current = Math.min(Math.max(current, min), max || min);
+    const session = this.#runtime.getSession(playlist.id, sound.id);
+    let duration = this.#cachedDuration(playlist, sound);
+    const candidate = Number(sound.sound?.duration);
+    if (!session && Number.isFinite(candidate) && candidate > 0) duration = this.#rememberDuration(playlist, sound, candidate);
+    if (duration <= 0) return;
 
     const slider = panel.querySelector("[data-eap-progress]");
     if (slider) {
-      slider.min = String(min);
-      slider.max = String(max || min);
-      slider.value = String(current);
-      slider.disabled = !nativeSound?.playing;
+      slider.min = "0";
+      slider.max = String(duration);
+      slider.disabled = !session;
     }
 
-    const currentLabel = panel.querySelector("[data-eap-current]");
-    if (currentLabel) currentLabel.textContent = formatTime(current);
-    const endLabel = panel.querySelector("[data-eap-progress-end]");
-    if (endLabel) endLabel.textContent = formatTime(max);
+    if (!this.#isSeeking) {
+      let current = session ? this.#runtime.getPosition(playlist.id, sound.id) : Number(sound.sound?.currentTime);
+      if (!Number.isFinite(current)) current = 0;
+      current = clamp(current, 0, duration);
+      if (slider) slider.value = String(current);
+      const currentLabel = panel.querySelector("[data-eap-current]");
+      if (currentLabel) currentLabel.textContent = formatTime(current);
+    }
+
+    const totalLabel = panel.querySelector("[data-eap-progress-end]");
+    if (totalLabel) totalLabel.textContent = formatTime(duration);
+    this.#updateTimelineMarkers(duration);
     this.#updatePlaybackStatus();
   }
 
@@ -324,7 +410,11 @@ export class EnhancedAudioPlayerUI {
     const status = panel.querySelector("[data-eap-status]");
     if (!status) return;
 
-    if (this.#runtime.isEnhanced(resolved.playlist.id, resolved.sound.id)) {
+    const session = this.#runtime.getSession(resolved.playlist.id, resolved.sound.id);
+    if (session?.paused) {
+      status.textContent = localize("EAP.Status.Paused");
+      status.dataset.state = "paused";
+    } else if (session) {
       status.textContent = localize("EAP.Status.Enhanced");
       status.dataset.state = "enhanced";
     } else if (resolved.sound.sound?.playing || resolved.sound.playing) {
@@ -334,6 +424,11 @@ export class EnhancedAudioPlayerUI {
       status.textContent = localize("EAP.Status.Idle");
       status.dataset.state = "idle";
     }
+
+    const pauseButton = panel.querySelector("[data-eap-action='pause']");
+    if (pauseButton) pauseButton.disabled = !session || Boolean(session.paused);
+    const stopButton = panel.querySelector("[data-eap-action='stop']");
+    if (stopButton) stopButton.disabled = !session && !resolved.sound.playing && !resolved.sound.sound?.playing;
   }
 
   #emptyPanelHtml() {
@@ -355,16 +450,21 @@ export class EnhancedAudioPlayerUI {
     const range = effectiveRange(config, duration);
     const endValue = config.end ?? duration;
     const canPlay = !loadError && duration > 0;
-    const status = this.#runtime.isEnhanced(playlist.id, sound.id)
-      ? localize("EAP.Status.Enhanced")
-      : (sound.sound?.playing || sound.playing ? localize("EAP.Status.Native") : localize("EAP.Status.Idle"));
+    const session = this.#runtime.getSession(playlist.id, sound.id);
+    const status = session?.paused
+      ? localize("EAP.Status.Paused")
+      : (session
+        ? localize("EAP.Status.Enhanced")
+        : (sound.sound?.playing || sound.playing ? localize("EAP.Status.Native") : localize("EAP.Status.Idle")));
 
-    this.#panel.dataset.duration = String(duration);
+    const startPct = duration > 0 ? clamp(config.start, 0, duration) / duration * 100 : 0;
+    const endPct = duration > 0 ? clamp(endValue, 0, duration) / duration * 100 : 100;
+    const widthPct = Math.max(0, endPct - startPct);
 
     return `
       <header class="eap-header">
         <span><i class="fa-solid fa-wave-square"></i> ${escapeHtml(localize("EAP.Title"))}</span>
-        <span class="eap-status" data-eap-status>${escapeHtml(status)}</span>
+        <span class="eap-status" data-eap-status data-state="${session?.paused ? "paused" : (session ? "enhanced" : "idle")}">${escapeHtml(status)}</span>
       </header>
 
       <div class="eap-track-block">
@@ -374,12 +474,16 @@ export class EnhancedAudioPlayerUI {
       </div>
 
       ${loadError ? `<div class="eap-error">${escapeHtml(localize("EAP.LoadError"))}</div>` : ""}
+      ${!config.fullTrack && !range.valid && duration > 0 ? `<div class="eap-warning">${escapeHtml(localize("EAP.InvalidRangeHint"))}</div>` : ""}
 
       <div class="eap-transport">
         <button type="button" data-eap-action="play" ${canPlay ? "" : "disabled"}>
           <i class="fa-solid fa-play"></i> ${escapeHtml(localize("EAP.Play"))}
         </button>
-        <button type="button" data-eap-action="stop">
+        <button type="button" data-eap-action="pause" ${session && !session.paused ? "" : "disabled"}>
+          <i class="fa-solid fa-pause"></i> ${escapeHtml(localize("EAP.Pause"))}
+        </button>
+        <button type="button" data-eap-action="stop" ${session || sound.playing || sound.sound?.playing ? "" : "disabled"}>
           <i class="fa-solid fa-stop"></i> ${escapeHtml(localize("EAP.Stop"))}
         </button>
       </div>
@@ -392,11 +496,11 @@ export class EnhancedAudioPlayerUI {
       <div class="eap-grid">
         <label>
           <span>${escapeHtml(localize("EAP.Start"))}</span>
-          <div class="eap-number"><input type="number" min="0" max="${duration}" step="0.001" value="${numberValue(config.start)}" data-eap-config="start"><span>s</span></div>
+          <div class="eap-number"><input type="number" min="0" step="0.001" value="${numberValue(config.start)}" data-eap-config="start"><span>s</span></div>
         </label>
         <label>
           <span>${escapeHtml(localize("EAP.End"))}</span>
-          <div class="eap-number"><input type="number" min="0" max="${duration}" step="0.001" value="${numberValue(endValue)}" data-eap-config="end"><span>s</span></div>
+          <div class="eap-number"><input type="number" min="0" step="0.001" value="${numberValue(endValue)}" data-eap-config="end"><span>s</span></div>
         </label>
       </div>
 
@@ -408,17 +512,36 @@ export class EnhancedAudioPlayerUI {
       <div class="eap-grid">
         <label>
           <span>${escapeHtml(localize("EAP.FadeIn"))}</span>
-          <div class="eap-number"><input type="number" min="0" max="${range.length}" step="0.050" value="${numberValue(config.fadeIn)}" data-eap-config="fadeIn"><span>s</span></div>
+          <div class="eap-number"><input type="number" min="0" step="0.050" value="${numberValue(config.fadeIn)}" data-eap-config="fadeIn"><span>s</span></div>
         </label>
         <label>
           <span>${escapeHtml(localize("EAP.FadeOut"))}</span>
-          <div class="eap-number"><input type="number" min="0" max="${range.length}" step="0.050" value="${numberValue(config.fadeOut)}" data-eap-config="fadeOut"><span>s</span></div>
+          <div class="eap-number"><input type="number" min="0" step="0.050" value="${numberValue(config.fadeOut)}" data-eap-config="fadeOut"><span>s</span></div>
         </label>
       </div>
 
       <div class="eap-progress-wrap">
-        <div class="eap-progress-labels"><span data-eap-current>${formatTime(range.start)}</span><span data-eap-progress-end>${formatTime(range.end)}</span></div>
-        <input type="range" data-eap-progress min="${range.start}" max="${range.end}" step="0.01" value="${range.start}" ${canPlay ? "" : "disabled"}>
+        <div class="eap-progress-labels">
+          <span><span class="eap-progress-caption">${escapeHtml(localize("EAP.Current"))}</span> <strong data-eap-current>${formatTime(session ? this.#runtime.getPosition(playlist.id, sound.id) : 0)}</strong></span>
+          <span><span class="eap-progress-caption">${escapeHtml(localize("EAP.Duration"))}</span> <strong data-eap-progress-end>${formatTime(duration)}</strong></span>
+        </div>
+        <div class="eap-timeline" data-eap-timeline ${config.fullTrack ? "data-full-track" : ""}
+             style="--eap-start-pct:${startPct}%;--eap-end-pct:${endPct}%;--eap-range-width:${widthPct}%">
+          <div class="eap-range-highlight" aria-hidden="true"></div>
+          <span class="eap-range-marker eap-range-marker-start" aria-hidden="true"></span>
+          <span class="eap-range-marker eap-range-marker-end" aria-hidden="true"></span>
+          <input type="range" data-eap-progress min="0" max="${duration}" step="0.01" value="${session ? clamp(this.#runtime.getPosition(playlist.id, sound.id), 0, duration) : 0}" ${session ? "" : "disabled"}>
+        </div>
+        <div class="eap-marker-labels">
+          <span data-eap-marker-start-label>${escapeHtml(localize("EAP.Start"))} ${formatTime(config.start)}</span>
+          <span data-eap-marker-end-label>${escapeHtml(localize("EAP.End"))} ${formatTime(endValue)}</span>
+        </div>
+      </div>
+
+      <div class="eap-footer-actions">
+        <button type="button" class="eap-reset" data-eap-action="reset">
+          <i class="fa-solid fa-rotate-left"></i> ${escapeHtml(localize("EAP.ResetTrack"))}
+        </button>
       </div>
     `;
   }
