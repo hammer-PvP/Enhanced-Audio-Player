@@ -26,5 +26,6 @@
   "EAP.Notifications.PauseFailed": "Enhanced Audio Player não conseguiu pausar a reprodução.",
   "EAP.Notifications.StopFailed": "Enhanced Audio Player não conseguiu parar a reprodução.",
   "EAP.Notifications.ResetComplete": "Enhanced Audio Player: configurações da faixa resetadas.",
-  "EAP.Notifications.ResetFailed": "Enhanced Audio Player não conseguiu resetar esta faixa."
+  "EAP.Notifications.ResetFailed": "Enhanced Audio Player não conseguiu resetar esta faixa.",
+  "EAP.Notifications.SeekFailed": "Enhanced Audio Player não conseguiu mover a reprodução para essa posição."
 }

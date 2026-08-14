@@ -248,3 +248,16 @@
   outline-offset: -1px;
   background: color-mix(in srgb, var(--color-warm-2, #c9a227) 12%, transparent) !important;
 }
+
+.eap-number input.eap-input-invalid {
+  border-color: var(--color-level-error, #d05b5b);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-level-error, #d05b5b) 45%, transparent);
+}
+
+.eap-timeline input[type="range"]:not(:disabled) {
+  cursor: pointer;
+}
+
+.eap-timeline:not([data-full-track]) .eap-range-highlight {
+  opacity: 0.62;
+}

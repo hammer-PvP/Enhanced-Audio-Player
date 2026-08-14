@@ -10,9 +10,23 @@ function nowId() {
   return `${Date.now()}-${random}`;
 }
 
+function samePolicy(session, range, trackDuration) {
+  return Boolean(session)
+    && Number(session.trackDuration) === Number(trackDuration)
+    && Number(session.rangeStart) === Number(range.start)
+    && Number(session.rangeEnd) === Number(range.end)
+    && Boolean(session.loop) === Boolean(range.loop)
+    && Number(session.fadeIn) === Number(range.fadeIn)
+    && Number(session.fadeOut) === Number(range.fadeOut);
+}
+
 export class PlaybackRuntime {
   #sessions = new Map();
   #onSessionChanged;
+  #latestRevision = new Map();
+  #queues = new Map();
+  #revisionCounter = 0;
+  #nativeReconcileTimers = new Map();
 
   constructor({onSessionChanged} = {}) {
     this.#onSessionChanged = onSessionChanged ?? (() => {});
@@ -38,9 +52,10 @@ export class PlaybackRuntime {
 
   getPosition(playlistId, soundId) {
     const session = this.getSession(playlistId, soundId);
+    if (session?.paused) return Number(session.offset) || 0;
+
     const resolved = resolveSound(playlistId, soundId);
     const nativeTime = Number(resolved?.sound?.sound?.currentTime);
-    if (session?.paused) return Number(session.offset) || 0;
     if (Number.isFinite(nativeTime)) return nativeTime;
     return Number(session?.offset) || 0;
   }
@@ -49,46 +64,109 @@ export class PlaybackRuntime {
     const range = effectiveRange(config, duration);
     if (!range.valid) throw new Error("Invalid playback range");
 
+    const key = sessionKey(playlist.id, playlistSound.id);
     const existing = this.getSession(playlist.id, playlistSound.id);
-    if (existing?.paused) {
-      const unchanged = existing.rangeStart === range.start
-        && existing.rangeEnd === range.end
-        && existing.loop === range.loop
-        && Number(existing.fadeIn) === Number(range.fadeIn)
-        && Number(existing.fadeOut) === Number(range.fadeOut);
-      if (unchanged) return this.resumeFromGM(playlist.id, playlistSound.id);
+    const resumePaused = Boolean(existing?.paused && samePolicy(existing, range, duration));
+    const offset = resumePaused
+      ? clamp(Number(existing.offset), range.start, range.end)
+      : range.start;
+
+    await this.#ensurePlaylistActive(playlist, playlistSound);
+
+    const command = this.#policyCommand({
+      type: SOCKET_TYPES.PLAY,
+      revision: this.#nextRevision(key),
+      sessionId: resumePaused ? existing.sessionId : nowId(),
+      playlist,
+      playlistSound,
+      range,
+      duration,
+      offset,
+      paused: false
+    });
+
+    await this.#acceptCommand(command);
+    game.socket.emit(SOCKET_CHANNEL, command);
+    return command;
+  }
+
+  /**
+   * Seek is an absolute transport action inside the currently allowed policy.
+   * If no Enhanced session exists, releasing the timeline starts one at offset.
+   * Seeking from Pause resumes playback, matching the UI contract.
+   */
+  async seekFromGM(playlist, playlistSound, config, duration, requestedOffset) {
+    const range = effectiveRange(config, duration);
+    if (!range.valid) throw new Error("Invalid playback range");
+
+    const key = sessionKey(playlist.id, playlistSound.id);
+    const existing = this.getSession(playlist.id, playlistSound.id);
+    const offset = clamp(Number(requestedOffset), range.start, range.end);
+
+    await this.#ensurePlaylistActive(playlist, playlistSound);
+
+    const command = this.#policyCommand({
+      type: SOCKET_TYPES.SEEK,
+      revision: this.#nextRevision(key),
+      sessionId: existing?.sessionId ?? nowId(),
+      playlist,
+      playlistSound,
+      range,
+      duration,
+      offset,
+      paused: false
+    });
+
+    await this.#acceptCommand(command);
+    game.socket.emit(SOCKET_CHANNEL, command);
+    return command;
+  }
+
+  /**
+   * Reconcile a live Enhanced session after an on-the-fly configuration edit.
+   * This does nothing when the selected track is not in an Enhanced session.
+   */
+  async reconfigureFromGM(playlist, playlistSound, config, duration, {repositionToStart = false} = {}) {
+    const existing = this.getSession(playlist.id, playlistSound.id);
+    if (!existing) return null;
+
+    const range = effectiveRange(config, duration);
+    if (!range.valid) {
+      await this.stopFromGM(playlist, playlistSound);
+      return null;
     }
 
-    const command = {
-      type: SOCKET_TYPES.PLAY,
-      sessionId: nowId(),
-      playlistId: playlist.id,
-      soundId: playlistSound.id,
-      controllerUserId: game.user.id,
-      trackDuration: Number(duration) || 0,
-      rangeStart: range.start,
-      rangeEnd: range.end,
-      offset: range.start,
-      loop: range.loop,
-      fadeIn: range.fadeIn,
-      fadeOut: range.fadeOut
-    };
+    const key = sessionKey(playlist.id, playlistSound.id);
+    const current = this.getPosition(playlist.id, playlistSound.id);
+    const offset = repositionToStart
+      ? range.start
+      : clamp(current, range.start, range.end);
 
-    // Keep the shared Foundry PlaylistSound state authoritative for whether the
-    // track is active. Enhanced playback only controls the native Sound instance.
-    await playlist.playSound(playlistSound);
+    const command = this.#policyCommand({
+      type: SOCKET_TYPES.RECONFIGURE,
+      revision: this.#nextRevision(key),
+      sessionId: existing.sessionId,
+      playlist,
+      playlistSound,
+      range,
+      duration,
+      offset,
+      paused: Boolean(existing.paused)
+    });
 
-    await this.#acceptPlay(command);
+    await this.#acceptCommand(command);
     game.socket.emit(SOCKET_CHANNEL, command);
     return command;
   }
 
   async pauseFromGM(playlistId, soundId) {
     const session = this.getSession(playlistId, soundId);
-    if (!session || session.paused) return;
+    if (!session || session.paused) return null;
 
+    const key = sessionKey(playlistId, soundId);
     const command = {
       type: SOCKET_TYPES.PAUSE,
+      revision: this.#nextRevision(key),
       playlistId,
       soundId,
       sessionId: session.sessionId,
@@ -96,53 +174,227 @@ export class PlaybackRuntime {
       offset: clamp(this.getPosition(playlistId, soundId), session.rangeStart, session.rangeEnd)
     };
 
-    await this.#acceptPause(command);
+    await this.#acceptCommand(command);
     game.socket.emit(SOCKET_CHANNEL, command);
-  }
-
-  async resumeFromGM(playlistId, soundId) {
-    const session = this.getSession(playlistId, soundId);
-    if (!session?.paused) return;
-
-    const command = {
-      type: SOCKET_TYPES.RESUME,
-      playlistId,
-      soundId,
-      sessionId: session.sessionId,
-      controllerUserId: game.user.id,
-      offset: clamp(Number(session.offset), session.rangeStart, session.rangeEnd)
-    };
-
-    await this.#acceptResume(command);
-    game.socket.emit(SOCKET_CHANNEL, command);
+    return command;
   }
 
   async stopFromGM(playlist, playlistSound) {
-    await this.stopLocalSession(playlist.id, playlistSound.id, {stopAudio: false, broadcast: true});
-    return playlist.stopSound(playlistSound);
-  }
-
-  async seekFromGM(playlistId, soundId, offset) {
-    const session = this.getSession(playlistId, soundId);
-    if (!session) return;
-
+    const key = sessionKey(playlist.id, playlistSound.id);
     const command = {
-      type: SOCKET_TYPES.SEEK,
-      playlistId,
-      soundId,
-      sessionId: session.sessionId,
+      type: SOCKET_TYPES.STOP_LOCAL,
+      revision: this.#nextRevision(key),
+      playlistId: playlist.id,
+      soundId: playlistSound.id,
       controllerUserId: game.user.id,
-      offset: clamp(Number(offset), session.rangeStart, session.rangeEnd)
+      stopAudio: true
     };
 
-    await this.#acceptSeek(command);
+    await this.#acceptCommand(command);
     game.socket.emit(SOCKET_CHANNEL, command);
+
+    if (playlistSound.playing) await playlist.stopSound(playlistSound);
+    return command;
   }
 
-  async stopLocalSession(playlistId, soundId, {stopAudio = false, broadcast = false} = {}) {
-    const key = sessionKey(playlistId, soundId);
-    const session = this.#sessions.get(key);
+  /** Reset uses this as a real transport barrier before flags are removed. */
+  async resetBarrierFromGM(playlist, playlistSound) {
+    await this.stopFromGM(playlist, playlistSound);
+    await Promise.resolve();
+  }
 
+  async onPlaylistSoundUpdated(playlistSound, changed) {
+    const playlistId = playlistSound.parent?.id;
+    if (!playlistId) return;
+    const key = sessionKey(playlistId, playlistSound.id);
+
+    if (changed.playing === false) {
+      // Defer one turn and inspect current document state. This avoids a stale
+      // native stop update killing a newer Enhanced PLAY that already won.
+      // Do not mint a local revision here: socket revisions are authored by the
+      // controlling GM and must remain comparable across clients.
+      queueMicrotask(() => {
+        if (playlistSound.playing !== false) return;
+        const session = this.#sessions.get(key);
+        if (!session) return;
+        session.active = false;
+        session.paused = false;
+        session.generation += 1;
+        this.#clearSchedules(session);
+        this.#sessions.delete(key);
+        this.#onSessionChanged();
+      });
+      return;
+    }
+
+    if (changed.playing === true && this.#sessions.has(key)) {
+      this.#scheduleNativeReconcile(playlistId, playlistSound.id);
+    }
+  }
+
+  async onPlaylistSoundDeleted(playlistSound) {
+    const playlistId = playlistSound.parent?.id;
+    if (!playlistId) return;
+    const key = sessionKey(playlistId, playlistSound.id);
+    const timer = this.#nativeReconcileTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.#nativeReconcileTimers.delete(key);
+    this.#sessions.delete(key);
+    this.#latestRevision.delete(key);
+    this.#onSessionChanged();
+  }
+
+  #policyCommand({type, revision, sessionId, playlist, playlistSound, range, duration, offset, paused}) {
+    return {
+      type,
+      revision,
+      sessionId,
+      playlistId: playlist.id,
+      soundId: playlistSound.id,
+      controllerUserId: game.user.id,
+      trackDuration: Number(duration) || 0,
+      rangeStart: range.start,
+      rangeEnd: range.end,
+      offset: clamp(Number(offset), range.start, range.end),
+      loop: Boolean(range.loop),
+      fadeIn: Number(range.fadeIn) || 0,
+      fadeOut: Number(range.fadeOut) || 0,
+      paused: Boolean(paused)
+    };
+  }
+
+  async #ensurePlaylistActive(playlist, playlistSound) {
+    if (playlistSound.playing) return;
+    await playlist.playSound(playlistSound);
+  }
+
+  #nextRevision(key) {
+    this.#revisionCounter = (this.#revisionCounter + 1) % 1000;
+    const revision = Date.now() * 1000 + this.#revisionCounter;
+    const prior = Number(this.#latestRevision.get(key)) || 0;
+    return Math.max(revision, prior + 1);
+  }
+
+  #isCurrent(key, revision) {
+    return Number(this.#latestRevision.get(key)) === Number(revision);
+  }
+
+  #acceptCommand(command) {
+    if (!command?.playlistId || !command?.soundId || !Number.isFinite(Number(command.revision))) return Promise.resolve();
+    const key = sessionKey(command.playlistId, command.soundId);
+    const revision = Number(command.revision);
+    const prior = Number(this.#latestRevision.get(key)) || 0;
+    if (revision <= prior) return Promise.resolve();
+    this.#latestRevision.set(key, revision);
+
+    return this.#enqueue(key, async () => {
+      if (!this.#isCurrent(key, revision)) return;
+      switch (command.type) {
+        case SOCKET_TYPES.PLAY:
+        case SOCKET_TYPES.SEEK:
+        case SOCKET_TYPES.RECONFIGURE:
+          await this.#acceptPolicy(command);
+          break;
+        case SOCKET_TYPES.PAUSE:
+          await this.#acceptPause(command);
+          break;
+        case SOCKET_TYPES.STOP_LOCAL:
+          await this.#acceptStop(command);
+          break;
+      }
+    });
+  }
+
+  #enqueue(key, task) {
+    const prior = this.#queues.get(key) ?? Promise.resolve();
+    const next = prior.catch(() => {}).then(task);
+    this.#queues.set(key, next);
+    void next.finally(() => {
+      if (this.#queues.get(key) === next) this.#queues.delete(key);
+    });
+    return next;
+  }
+
+  async #handleSocket(payload) {
+    if (!payload || typeof payload !== "object") return;
+    const controller = payload.controllerUserId ? game.users?.get(payload.controllerUserId) : null;
+    if (!controller?.isGM) return;
+
+    try {
+      await this.#acceptCommand(payload);
+    } catch (error) {
+      console.error(`${MODULE_ID} | Socket playback command failed`, error);
+    }
+  }
+
+  async #acceptPolicy(command) {
+    const resolved = resolveSound(command.playlistId, command.soundId);
+    if (!resolved) return;
+    const key = sessionKey(command.playlistId, command.soundId);
+    if (!this.#isCurrent(key, command.revision)) return;
+
+    const rangeStart = Math.max(0, Number(command.rangeStart) || 0);
+    const rangeEnd = Math.max(rangeStart, Number(command.rangeEnd) || 0);
+    const trackDuration = Math.max(0, Number(command.trackDuration) || 0);
+    if (trackDuration <= 0 || rangeEnd <= rangeStart || rangeEnd > trackDuration) return;
+
+    const prior = this.#sessions.get(key);
+    if (prior) {
+      prior.active = false;
+      prior.generation += 1;
+      this.#clearSchedules(prior);
+    }
+
+    const session = {
+      ...command,
+      rangeStart,
+      rangeEnd,
+      trackDuration,
+      offset: clamp(Number(command.offset), rangeStart, rangeEnd),
+      loop: Boolean(command.loop),
+      fadeIn: Math.max(0, Number(command.fadeIn) || 0),
+      fadeOut: Math.max(0, Number(command.fadeOut) || 0),
+      active: true,
+      paused: Boolean(command.paused),
+      scheduleHandles: new Set(),
+      generation: 0,
+      lastAppliedAt: 0
+    };
+
+    this.#sessions.set(key, session);
+
+    if (session.paused) {
+      await this.#stopOrPauseNative(session, {preferPause: true});
+    } else {
+      await this.#applyPlayback(session, session.offset, {restart: true, revision: command.revision});
+    }
+    this.#onSessionChanged();
+  }
+
+  async #acceptPause(command) {
+    const key = sessionKey(command.playlistId, command.soundId);
+    if (!this.#isCurrent(key, command.revision)) return;
+    const session = this.#sessions.get(key);
+    if (!session || session.sessionId !== command.sessionId || !session.active) return;
+
+    session.revision = command.revision;
+    session.offset = clamp(Number(command.offset), session.rangeStart, session.rangeEnd);
+    session.paused = true;
+    session.generation += 1;
+    this.#clearSchedules(session);
+    await this.#stopOrPauseNative(session, {preferPause: true});
+    this.#onSessionChanged();
+  }
+
+  async #acceptStop(command) {
+    const key = sessionKey(command.playlistId, command.soundId);
+    if (!this.#isCurrent(key, command.revision)) return;
+
+    const timer = this.#nativeReconcileTimers.get(key);
+    if (timer) clearTimeout(timer);
+    this.#nativeReconcileTimers.delete(key);
+
+    const session = this.#sessions.get(key);
     if (session) {
       session.active = false;
       session.paused = false;
@@ -151,8 +403,8 @@ export class PlaybackRuntime {
       this.#sessions.delete(key);
     }
 
-    if (stopAudio) {
-      const resolved = resolveSound(playlistId, soundId);
+    if (command.stopAudio !== false) {
+      const resolved = resolveSound(command.playlistId, command.soundId);
       const nativeSound = resolved?.sound?.sound;
       if (nativeSound?.playing || Number(nativeSound?.pausedTime) > 0) {
         try {
@@ -163,161 +415,15 @@ export class PlaybackRuntime {
       }
     }
 
-    if (broadcast) {
-      game.socket.emit(SOCKET_CHANNEL, {
-        type: SOCKET_TYPES.STOP_LOCAL,
-        playlistId,
-        soundId,
-        controllerUserId: game.user.id
-      });
-    }
-
-    if (session) this.#onSessionChanged();
+    this.#onSessionChanged();
   }
 
-  async onPlaylistSoundUpdated(playlistSound, changed) {
-    const playlistId = playlistSound.parent?.id;
-    if (!playlistId) return;
-    const session = this.getSession(playlistId, playlistSound.id);
+  async #applyPlayback(session, requestedOffset, {restart = false, revision = session.revision} = {}) {
+    const key = sessionKey(session.playlistId, session.soundId);
+    if (!session.active || session.paused || !this.#isCurrent(key, revision)) return;
 
-    if (changed.playing === false) {
-      await this.stopLocalSession(playlistId, playlistSound.id, {stopAudio: false, broadcast: false});
-      return;
-    }
-
-    // Core document synchronization may occur after our socket command. Re-apply
-    // the local enhanced state once the native PlaylistSound confirms it is active.
-    if (changed.playing === true && session && !session.nativeStateConfirmed) {
-      session.nativeStateConfirmed = true;
-      queueMicrotask(() => {
-        if (!session.active) return;
-        if (session.paused) this.#pauseNative(session);
-        else void this.#applyPlayback(session, session.offset, {restart: true});
-      });
-      return;
-    }
-
-    // Keep a module-paused Sound paused if another PlaylistSound update causes
-    // Foundry to synchronize its local native Sound instance.
-    if (session?.paused) queueMicrotask(() => this.#pauseNative(session));
-  }
-
-  async onPlaylistSoundDeleted(playlistSound) {
-    const playlistId = playlistSound.parent?.id;
-    if (!playlistId) return;
-    await this.stopLocalSession(playlistId, playlistSound.id, {stopAudio: false, broadcast: false});
-  }
-
-  async #handleSocket(payload) {
-    if (!payload || typeof payload !== "object") return;
-    const controller = payload.controllerUserId ? game.users?.get(payload.controllerUserId) : null;
-    if (!controller?.isGM) return;
-
-    try {
-      switch (payload.type) {
-        case SOCKET_TYPES.PLAY:
-          await this.#acceptPlay(payload);
-          break;
-        case SOCKET_TYPES.PAUSE:
-          await this.#acceptPause(payload);
-          break;
-        case SOCKET_TYPES.RESUME:
-          await this.#acceptResume(payload);
-          break;
-        case SOCKET_TYPES.SEEK:
-          await this.#acceptSeek(payload);
-          break;
-        case SOCKET_TYPES.STOP_LOCAL:
-          await this.stopLocalSession(payload.playlistId, payload.soundId, {stopAudio: false, broadcast: false});
-          break;
-      }
-    } catch (error) {
-      console.error(`${MODULE_ID} | Socket playback command failed`, error);
-    }
-  }
-
-  async #acceptPlay(command) {
-    const resolved = resolveSound(command.playlistId, command.soundId);
+    const resolved = resolveSound(session.playlistId, session.soundId);
     if (!resolved) return;
-
-    const key = sessionKey(command.playlistId, command.soundId);
-    const prior = this.#sessions.get(key);
-    if (prior && prior.sessionId === command.sessionId) return;
-    if (prior) {
-      prior.active = false;
-      prior.generation += 1;
-      this.#clearSchedules(prior);
-    }
-
-    const rangeStart = Math.max(0, Number(command.rangeStart) || 0);
-    const rangeEnd = Math.max(rangeStart, Number(command.rangeEnd) || 0);
-    const session = {
-      ...command,
-      rangeStart,
-      rangeEnd,
-      trackDuration: Math.max(rangeEnd, Number(command.trackDuration) || 0),
-      active: true,
-      paused: false,
-      offset: clamp(Number(command.offset), rangeStart, rangeEnd),
-      scheduleHandles: new Set(),
-      generation: 0,
-      nativeStateConfirmed: Boolean(resolved.sound.playing)
-    };
-
-    this.#sessions.set(key, session);
-    await this.#applyPlayback(session, session.offset, {restart: true});
-    this.#onSessionChanged();
-  }
-
-  async #acceptPause(command) {
-    const session = this.getSession(command.playlistId, command.soundId);
-    if (!session || session.sessionId !== command.sessionId || !session.active) return;
-
-    session.offset = clamp(Number(command.offset), session.rangeStart, session.rangeEnd);
-    session.paused = true;
-    session.generation += 1;
-    this.#clearSchedules(session);
-    this.#pauseNative(session);
-    this.#onSessionChanged();
-  }
-
-  async #acceptResume(command) {
-    const session = this.getSession(command.playlistId, command.soundId);
-    if (!session || session.sessionId !== command.sessionId || !session.active) return;
-
-    session.offset = clamp(Number(command.offset), session.rangeStart, session.rangeEnd);
-    session.paused = false;
-    await this.#applyPlayback(session, session.offset, {restart: false});
-    this.#onSessionChanged();
-  }
-
-  async #acceptSeek(command) {
-    const session = this.getSession(command.playlistId, command.soundId);
-    if (!session || session.sessionId !== command.sessionId || !session.active) return;
-
-    session.offset = clamp(Number(command.offset), session.rangeStart, session.rangeEnd);
-    if (!session.paused) await this.#applyPlayback(session, session.offset, {restart: true});
-    this.#onSessionChanged();
-  }
-
-  #pauseNative(session) {
-    const resolved = resolveSound(session.playlistId, session.soundId);
-    const nativeSound = resolved?.sound?.sound;
-    if (!nativeSound?.playing) return;
-    try {
-      nativeSound.pause();
-    } catch (error) {
-      console.warn(`${MODULE_ID} | Failed to pause native Sound`, error);
-    }
-  }
-
-  async #applyPlayback(session, requestedOffset, {restart = false} = {}) {
-    if (!session.active || session.paused) return;
-    const resolved = resolveSound(session.playlistId, session.soundId);
-    if (!resolved) {
-      await this.stopLocalSession(session.playlistId, session.soundId);
-      return;
-    }
 
     const playlistSound = resolved.sound;
     try {
@@ -327,15 +433,14 @@ export class PlaybackRuntime {
       return;
     }
 
+    if (!session.active || session.paused || !this.#isCurrent(key, revision)) return;
     const nativeSound = playlistSound.sound;
     if (!nativeSound) return;
 
-    // The GM-provided trackDuration was captured from the full source before
-    // enhanced playback began. Do not rewrite it from a transient limited cycle.
-    const trackDuration = Math.max(0, Number(session.trackDuration) || Number(nativeSound.duration) || 0);
-    const rangeStart = Math.max(0, Number(session.rangeStart) || 0);
-    const rangeEnd = Math.max(rangeStart, Number(session.rangeEnd) || 0);
-    if (trackDuration <= 0 || rangeStart >= trackDuration || rangeEnd > trackDuration || rangeEnd <= rangeStart) return;
+    const trackDuration = Number(session.trackDuration) || 0;
+    const rangeStart = Number(session.rangeStart) || 0;
+    const rangeEnd = Number(session.rangeEnd) || 0;
+    if (trackDuration <= 0 || rangeStart < 0 || rangeEnd <= rangeStart || rangeEnd > trackDuration) return;
 
     session.offset = clamp(Number(requestedOffset), rangeStart, rangeEnd);
     session.generation += 1;
@@ -346,15 +451,17 @@ export class PlaybackRuntime {
       try {
         nativeSound.pause();
       } catch (error) {
-        console.debug(`${MODULE_ID} | Native pause before enhanced restart failed`, error);
+        console.debug(`${MODULE_ID} | Native pause before restart failed`, error);
       }
     }
 
-    await this.#playCycle(session, session.offset, generation);
+    await this.#playCycle(session, session.offset, generation, revision);
   }
 
-  async #playCycle(session, offset, generation) {
-    if (!session.active || session.paused || generation !== session.generation) return;
+  async #playCycle(session, offset, generation, revision) {
+    const key = sessionKey(session.playlistId, session.soundId);
+    if (!session.active || session.paused || generation !== session.generation || !this.#isCurrent(key, revision)) return;
+
     const resolved = resolveSound(session.playlistId, session.soundId);
     const playlistSound = resolved?.sound;
     const nativeSound = playlistSound?.sound;
@@ -363,8 +470,8 @@ export class PlaybackRuntime {
     const start = clamp(Number(offset), session.rangeStart, session.rangeEnd);
     const remaining = Math.max(0, session.rangeEnd - start);
     if (remaining <= 0) {
-      if (session.loop) return this.#playCycle(session, session.rangeStart, generation);
-      return this.#finishSession(session);
+      if (session.loop) return this.#playCycle(session, session.rangeStart, generation, revision);
+      return this.#finishSession(session, revision);
     }
 
     const fadeInMs = Math.max(0, Math.min(Number(session.fadeIn) || 0, remaining) * 1000);
@@ -376,14 +483,14 @@ export class PlaybackRuntime {
       && nativeSound.isBuffer
       && fadeInMs === 0
       && fadeOutSec === 0
-      && start === session.rangeStart
+      && Math.abs(start - session.rangeStart) < 0.0005
     );
 
     const onended = () => {
-      if (!session.active || session.paused || generation !== session.generation) return;
+      if (!session.active || session.paused || generation !== session.generation || !this.#isCurrent(key, revision)) return;
       if (canUseNativeLoop) return;
-      if (session.loop) void this.#playCycle(session, session.rangeStart, generation);
-      else void this.#finishSession(session);
+      if (session.loop) void this.#playCycle(session, session.rangeStart, generation, revision);
+      else void this.#finishSession(session, revision);
     };
 
     const options = {
@@ -409,18 +516,21 @@ export class PlaybackRuntime {
       return;
     }
 
-    // A pause/seek can race the asynchronous start. Respect the newest generation.
-    if (!session.active || session.paused || generation !== session.generation) {
-      if (nativeSound.playing) nativeSound.pause();
+    if (!session.active || session.paused || generation !== session.generation || !this.#isCurrent(key, revision)) {
+      if (nativeSound.playing) {
+        try { nativeSound.pause(); } catch (_error) { /* newest command will reconcile */ }
+      }
       return;
     }
+
+    session.lastAppliedAt = Date.now();
 
     if (fadeOutSec > 0 && !canUseNativeLoop) {
       const fadeAt = session.rangeEnd - fadeOutSec;
       try {
         const handle = nativeSound.schedule(() => {
           session.scheduleHandles.delete(handle);
-          if (!session.active || session.paused || generation !== session.generation) return;
+          if (!session.active || session.paused || generation !== session.generation || !this.#isCurrent(key, revision)) return;
           void nativeSound.fade(0, {
             duration: fadeOutSec * 1000,
             from: targetVolume,
@@ -434,16 +544,16 @@ export class PlaybackRuntime {
     }
   }
 
-  async #finishSession(session) {
-    if (!session.active) return;
+  async #finishSession(session, revision) {
     const key = sessionKey(session.playlistId, session.soundId);
+    if (!session.active || !this.#isCurrent(key, revision)) return;
+
     this.#clearSchedules(session);
     session.active = false;
     session.paused = false;
     this.#sessions.delete(key);
     this.#onSessionChanged();
 
-    // Only the initiating GM changes the shared Playlist document at natural end.
     if (game.user?.isGM && game.user.id === session.controllerUserId) {
       const resolved = resolveSound(session.playlistId, session.soundId);
       if (resolved?.sound?.playing) {
@@ -454,6 +564,63 @@ export class PlaybackRuntime {
         }
       }
     }
+  }
+
+  async #stopOrPauseNative(session, {preferPause = false} = {}) {
+    const resolved = resolveSound(session.playlistId, session.soundId);
+    const nativeSound = resolved?.sound?.sound;
+    if (!nativeSound) return;
+    try {
+      if (preferPause && nativeSound.playing) nativeSound.pause();
+      else if (!preferPause && (nativeSound.playing || Number(nativeSound.pausedTime) > 0)) await nativeSound.stop();
+    } catch (error) {
+      console.warn(`${MODULE_ID} | Native transport operation failed`, error);
+    }
+  }
+
+  #scheduleNativeReconcile(playlistId, soundId) {
+    const key = sessionKey(playlistId, soundId);
+    const prior = this.#nativeReconcileTimers.get(key);
+    if (prior) clearTimeout(prior);
+
+    const timer = setTimeout(() => {
+      this.#nativeReconcileTimers.delete(key);
+      const session = this.#sessions.get(key);
+      if (!session?.active) return;
+      const revision = Number(session.revision);
+      if (!this.#isCurrent(key, revision)) return;
+
+      void this.#enqueue(key, async () => {
+        const current = this.#sessions.get(key);
+        if (!current?.active || current.paused || !this.#isCurrent(key, revision)) return;
+        const resolved = resolveSound(playlistId, soundId);
+        const nativeSound = resolved?.sound?.sound;
+        const currentTime = Number(nativeSound?.currentTime);
+        const expected = this.#expectedCurrentTime(current);
+        const looksCorrect = nativeSound?.playing
+          && Number.isFinite(currentTime)
+          && Math.abs(currentTime - expected) < 1.25;
+        if (looksCorrect) return;
+        await this.#applyPlayback(current, expected, {restart: true, revision});
+      });
+    }, 75);
+
+    this.#nativeReconcileTimers.set(key, timer);
+  }
+
+  #expectedCurrentTime(session) {
+    const start = Number(session.rangeStart) || 0;
+    const end = Number(session.rangeEnd) || start;
+    const base = clamp(Number(session.offset), start, end);
+    if (!session.lastAppliedAt || session.paused) return base;
+
+    const elapsed = Math.max(0, (Date.now() - Number(session.lastAppliedAt)) / 1000);
+    if (!session.loop) return clamp(base + elapsed, start, end);
+
+    const length = end - start;
+    if (length <= 0) return start;
+    const relative = (base - start + elapsed) % length;
+    return start + relative;
   }
 
   #clearSchedules(session) {

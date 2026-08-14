@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.0.3
+
+Transport determinism and reactive range-editor patch.
+
+- Reworked Enhanced transport around per-track command revisions and serialized command queues so stale asynchronous Play/Seek/Reconfigure operations cannot overwrite newer GM actions.
+- Removed the old duplicate native-state reapply path. Native Playlist synchronization now reconciles only when the local Sound is demonstrably out of the current Enhanced state.
+- Full Track, Custom Range, Start/End, Loop, fades, timeline bounds, and the active Enhanced session now reconcile from the same configuration state.
+- Full Track changes apply immediately: Full Track enables seek across the complete source; Custom Range confines seek to Start → End while the timeline still represents the entire source duration.
+- Disabling Full Track immediately moves the stopped playhead to Start. Start/End edits reposition an active or stopped Custom Range to the new Start after the edit is committed.
+- Start/End/Fade inputs are now controlled text-decimal fields rather than native number inputs. They accept `100`, `100.5`, and `100,5` and isolate keyboard/wheel events from Foundry keybindings.
+- Numpad digits and decimal input are handled by the module even when Num Lock is off, preventing Home/End/Page navigation from leaking into Foundry while editing values.
+- Numeric edits update markers and range validity immediately and commit after a short typing debounce; Enter/change/blur flush the edit without requiring Play or Stop.
+- Timeline drag no longer depends on an already-active Enhanced session. Releasing the thumb starts or continues Enhanced playback at the chosen position.
+- The timeline remains visually 0 → total duration at all times. In Custom Range the thumb is clamped to Start → End; in Full Track it is free across the entire source.
+- Pointer seek uses pointer capture and suppresses duplicate `change` commits after `pointerup` for more consistent drag behavior.
+- Loop/Fade edits reconcile an active Enhanced session on the fly without requiring a manual restart. Structural range edits restart/reposition at Start.
+- Stop deterministically ends the Enhanced session and returns the stopped playhead to 0 for Full Track or Start for Custom Range.
+- Reset Track is now a transport barrier: it invalidates old transport work, stops the native Sound/session, removes only the module playback flag, then restores the implicit Full Track state and playhead 0.
+- Preserved the v0.0.2 protection that saved Start/End values are never destructively clamped against transient Sound duration metadata.
+
 ## 0.0.2
 
 Playback-state and editor corrections from the first live Foundry test.
