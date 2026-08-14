@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.0.4
+
+Absolute-seek correction and Foundry V13 compatibility patch.
+
+- Fixed consecutive timeline seeks being applied as if they were relative offsets in some native Sound states (for example 10s + seek 30s becoming ~40s).
+- Absolute transport restarts now clear the native paused/resume state with `Sound.stop()` before `Sound.play({offset})`. Only the explicit Pause command is allowed to preserve `pausedTime`.
+- Resume after Pause remains deterministic because the Enhanced session stores the paused absolute position, clears native resume state, and restarts at that stored offset.
+- Added regression coverage for multiple consecutive absolute seeks so offsets cannot accumulate.
+- Added a Foundry V13/V14 compatibility adapter for PlaylistDirectory detection, AppV2 render roots, currently-playing exclusion, Playlist ancestry, PlaylistSound row resolution, and selected-row highlighting.
+- Added defensive UUID and dataset fallbacks for Playlist/PlaylistSound rows while keeping selection limited to sounds nested inside native Playlists.
+- Lowered manifest minimum compatibility to Foundry VTT `13.341`, the first V13 Full Stable build, while retaining V14.365 as the verified target.
+- Playback architecture remains unchanged: native Playlist/PlaylistSound/Sound objects, native document flags, and the module socket are still used; no parallel audio player was introduced.
+
 ## 0.0.3
 
 Transport determinism and reactive range-editor patch.

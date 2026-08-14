@@ -447,14 +447,20 @@ export class PlaybackRuntime {
     const generation = session.generation;
     this.#clearSchedules(session);
 
-    if (restart && nativeSound.playing) {
+    if (restart && (nativeSound.playing || Number(nativeSound.pausedTime) > 0)) {
+      // IMPORTANT: restarts/seeks are absolute transport operations. Pause is
+      // intentionally NOT used here because it preserves pausedTime and can
+      // contaminate a subsequent explicit offset (observed as 10 + seek 30 =>
+      // ~40 on live playback). Only the user-facing Pause command preserves
+      // pausedTime. Stop clears the native resume state before absolute play.
       try {
-        nativeSound.pause();
+        await nativeSound.stop();
       } catch (error) {
-        console.debug(`${MODULE_ID} | Native pause before restart failed`, error);
+        console.debug(`${MODULE_ID} | Native stop before absolute restart failed`, error);
       }
     }
 
+    if (!session.active || session.paused || generation !== session.generation || !this.#isCurrent(key, revision)) return;
     await this.#playCycle(session, session.offset, generation, revision);
   }
 
@@ -517,8 +523,8 @@ export class PlaybackRuntime {
     }
 
     if (!session.active || session.paused || generation !== session.generation || !this.#isCurrent(key, revision)) {
-      if (nativeSound.playing) {
-        try { nativeSound.pause(); } catch (_error) { /* newest command will reconcile */ }
+      if (nativeSound.playing || Number(nativeSound.pausedTime) > 0) {
+        try { await nativeSound.stop(); } catch (_error) { /* newest command will reconcile */ }
       }
       return;
     }

@@ -2,7 +2,7 @@
 
 Enhanced Audio Player is a system-agnostic Foundry VTT module that adds a compact GM-only playback-control layer below the native Playlist Directory. It does not replace Foundry playlists, PlaylistSound documents, Sound objects, or the audio engine.
 
-## v0.0.3 scope
+## v0.0.4 scope
 
 - Click a sound row inside an expanded native Playlist to select it without starting playback.
 - Native playlist controls remain untouched.
@@ -20,6 +20,8 @@ Enhanced Audio Player is a system-agnostic Foundry VTT module that adds a compac
 - Disabling Full Track or changing a structural range moves the Custom Range playhead to Start.
 - Releasing a timeline drag starts or continues Enhanced playback at the chosen allowed position.
 - Per-track command revisions and serialized transport prevent stale asynchronous Play/Seek/Reset work from restoring an older state.
+- Absolute restart/seek now clears native paused resume state before `Sound.play({offset})`, preventing consecutive seeks from accumulating the prior position.
+- A small compatibility adapter isolates PlaylistDirectory/render-root/PlaylistSound-row differences between Foundry V13 and V14 while sharing the same playback runtime.
 - Configuration is stored in `flags.enhanced-audio-player.playback` on each PlaylistSound.
 - Saved Start/End values are never rewritten from transient runtime duration metadata.
 - **Reset Track** acts as a transport barrier, removes only the module playback flag, and restores the implicit Full Track default.
@@ -66,8 +68,9 @@ It also does not replace `Playlist`, `PlaylistSound`, `Sound`, or global `Sound.
 
 ## Compatibility
 
-- Foundry VTT: minimum Version 14
-- Verified API target: Foundry VTT 14.365
+- Foundry VTT: minimum Version 13 Stable build 341 (`13.341`)
+- Supported core generations: V13 Stable (341+) and V14
+- Verified manifest target: Foundry VTT 14.365
 - Game system: Any
 
 ## Installation

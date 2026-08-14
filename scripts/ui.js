@@ -1,4 +1,5 @@
 import {MODULE_ID} from "./constants.js";
+import {findPlaylistSoundRow, isCurrentlyPlayingElement, isPlaylistDirectoryApplication, normalizeRenderElement, resolvePlaylistSoundFromElement} from "./compat.js";
 import {clamp, effectiveRange, readPlaybackConfig, resetPlaybackConfig, writePlaybackConfig} from "./config.js";
 
 const PANEL_CLASS = "eap-panel";
@@ -34,23 +35,24 @@ export class EnhancedAudioPlayerUI {
 
   onPlaylistDirectoryRender(application, element) {
     if (!game.user?.isGM) return;
-    const PlaylistDirectory = foundry?.applications?.sidebar?.tabs?.PlaylistDirectory;
-    if (!PlaylistDirectory || !(application instanceof PlaylistDirectory)) return;
+    if (!isPlaylistDirectoryApplication(application)) return;
+    const root = normalizeRenderElement(element);
+    if (!root) return;
 
-    this.#root = element;
-    element.querySelector(`.${PANEL_CLASS}`)?.remove();
+    this.#root = root;
+    root.querySelector(`.${PANEL_CLASS}`)?.remove();
 
     const panel = document.createElement("section");
     panel.className = PANEL_CLASS;
     panel.dataset.moduleId = MODULE_ID;
-    element.append(panel);
+    root.append(panel);
     this.#panel = panel;
     this.#isSeeking = false;
     this.#seekPointerId = null;
 
-    if (!this.#boundRoots.has(element)) {
-      element.addEventListener("click", event => { void this.#onDirectoryClick(event); });
-      this.#boundRoots.add(element);
+    if (!this.#boundRoots.has(root)) {
+      root.addEventListener("click", event => { void this.#onDirectoryClick(event); });
+      this.#boundRoots.add(root);
     }
 
     this.#highlightSelection();
@@ -161,7 +163,7 @@ export class EnhancedAudioPlayerUI {
   async #onDirectoryClick(event) {
     if (!(event.target instanceof Element)) return;
     if (event.target.closest(`.${PANEL_CLASS}`)) return;
-    if (event.target.closest(".currently-playing, [data-part='playing'], [data-application-part='playing']")) return;
+    if (isCurrentlyPlayingElement(event.target)) return;
     if (event.target.closest(INTERACTIVE_SELECTOR)) return;
 
     const match = this.#resolveSoundFromElement(event.target);
@@ -178,58 +180,7 @@ export class EnhancedAudioPlayerUI {
   }
 
   #resolveSoundFromElement(target) {
-    const soundIndex = new Map();
-    for (const playlist of game.playlists ?? []) {
-      for (const sound of playlist.sounds ?? []) {
-        const list = soundIndex.get(sound.id) ?? [];
-        list.push({playlist, sound});
-        soundIndex.set(sound.id, list);
-      }
-    }
-
-    let node = target;
-    while (node instanceof HTMLElement && node !== this.#root) {
-      const uuid = node.dataset?.uuid;
-      if (uuid) {
-        const parsed = this.#resolveByUuid(uuid);
-        if (parsed && this.#findParentPlaylistId(node) === parsed.playlist.id) return {...parsed, row: node};
-      }
-
-      const ids = [node.dataset?.soundId, node.dataset?.documentId, node.dataset?.entryId].filter(Boolean);
-      for (const id of ids) {
-        const matches = soundIndex.get(id) ?? [];
-        const playlistId = this.#findParentPlaylistId(node);
-        if (!playlistId) continue;
-        const exact = matches.find(match => match.playlist.id === playlistId);
-        if (exact) return {...exact, row: node};
-      }
-      node = node.parentElement;
-    }
-    return null;
-  }
-
-  #resolveByUuid(uuid) {
-    const parts = String(uuid).split(".");
-    const playlistAt = parts.indexOf("Playlist");
-    if (playlistAt < 0) return null;
-    const playlistId = parts[playlistAt + 1];
-    const soundTypeAt = parts.findIndex((part, index) => index > playlistAt + 1 && part === "PlaylistSound");
-    if (!playlistId || soundTypeAt < 0) return null;
-    const soundId = parts[soundTypeAt + 1];
-    const playlist = game.playlists?.get(playlistId);
-    const sound = playlist?.sounds?.get(soundId);
-    return playlist && sound ? {playlist, sound} : null;
-  }
-
-  #findParentPlaylistId(node) {
-    let current = node?.parentElement;
-    while (current instanceof HTMLElement && current !== this.#root) {
-      const id = current.dataset?.entryId ?? current.dataset?.documentId;
-      if (id && game.playlists?.has(id)) return id;
-      if (current.dataset?.playlistId && game.playlists?.has(current.dataset.playlistId)) return current.dataset.playlistId;
-      current = current.parentElement;
-    }
-    return null;
+    return resolvePlaylistSoundFromElement(target, this.#root);
   }
 
   #highlightSelection(preferredRow = null) {
@@ -243,20 +194,8 @@ export class EnhancedAudioPlayerUI {
       return;
     }
 
-    const soundId = CSS.escape(selected.sound.id);
-    const selectors = [
-      `[data-sound-id="${soundId}"]`,
-      `[data-document-id="${soundId}"]`,
-      `[data-entry-id="${soundId}"]`
-    ];
-    for (const selector of selectors) {
-      for (const row of this.#root.querySelectorAll(selector)) {
-        if (!(row instanceof HTMLElement) || row.closest(`.${PANEL_CLASS}`)) continue;
-        if (this.#findParentPlaylistId(row) !== selected.playlist.id) continue;
-        row.classList.add(SELECTED_CLASS);
-        return;
-      }
-    }
+    const row = findPlaylistSoundRow(this.#root, selected.playlist.id, selected.sound.id);
+    if (row && !row.closest(`.${PANEL_CLASS}`)) row.classList.add(SELECTED_CLASS);
   }
 
   #attachPanelListeners({playlist, sound, duration}) {

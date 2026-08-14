@@ -1,8 +1,8 @@
 {
   "id": "enhanced-audio-player",
   "title": "Enhanced Audio Player",
-  "description": "Adds a GM playback-control layer to Foundry VTT native playlists with deterministic full-track/custom-range transport, looping, fades, reactive range editing, full-duration timeline, bounded seek, pause/stop, and per-sound persistence without replacing Foundry audio.",
-  "version": "0.0.3",
+  "description": "Adds a GM playback-control layer to Foundry VTT V13/V14 native playlists with deterministic full-track/custom-range transport, absolute seeking, looping, fades, reactive range editing, full-duration timeline, bounded seek, pause/stop, and per-sound persistence without replacing Foundry audio.",
+  "version": "0.0.4",
   "authors": [
     {
       "name": "hammer-PvP",
@@ -10,7 +10,7 @@
     }
   ],
   "compatibility": {
-    "minimum": "14",
+    "minimum": "13.341",
     "verified": "14.365"
   },
   "esmodules": [
@@ -27,14 +27,14 @@
     },
     {
       "lang": "pt-BR",
-      "name": "Portugu\u00eas (Brasil)",
+      "name": "Português (Brasil)",
       "path": "lang/pt-BR.json"
     }
   ],
   "socket": true,
   "url": "https://github.com/hammer-PvP/Enhanced-Audio-Player",
   "manifest": "https://github.com/hammer-PvP/Enhanced-Audio-Player/releases/latest/download/module.json",
-  "download": "https://github.com/hammer-PvP/Enhanced-Audio-Player/releases/download/v0.0.3/Enhanced-Audio-Player.zip",
+  "download": "https://github.com/hammer-PvP/Enhanced-Audio-Player/releases/download/v0.0.4/Enhanced-Audio-Player.zip",
   "readme": "https://github.com/hammer-PvP/Enhanced-Audio-Player/blob/main/README.md",
   "changelog": "https://github.com/hammer-PvP/Enhanced-Audio-Player/blob/main/CHANGELOG.md",
   "bugs": "https://github.com/hammer-PvP/Enhanced-Audio-Player/issues"
