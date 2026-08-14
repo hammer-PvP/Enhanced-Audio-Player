@@ -1,0 +1,21 @@
+{
+  "EAP.Title": "Enhanced Audio Player",
+  "EAP.SelectTrack": "Select a sound inside an expanded playlist.",
+  "EAP.Loading": "Loading audio metadata...",
+  "EAP.LoadError": "The selected audio could not be loaded.",
+  "EAP.SelectedTrack": "Selected Track",
+  "EAP.Play": "Play",
+  "EAP.Stop": "Stop",
+  "EAP.FullTrack": "Full Track",
+  "EAP.Start": "Start",
+  "EAP.End": "End",
+  "EAP.LoopRange": "Loop Range",
+  "EAP.FadeIn": "Fade In",
+  "EAP.FadeOut": "Fade Out",
+  "EAP.Status.Idle": "Idle",
+  "EAP.Status.Native": "Native playback",
+  "EAP.Status.Enhanced": "Enhanced playback",
+  "EAP.Notifications.InvalidRange": "Enhanced Audio Player: the selected playback range is invalid.",
+  "EAP.Notifications.PlayFailed": "Enhanced Audio Player could not start playback.",
+  "EAP.Notifications.StopFailed": "Enhanced Audio Player could not stop playback."
+}

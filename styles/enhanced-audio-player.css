@@ -1,0 +1,151 @@
+.eap-panel {
+  flex: 0 0 auto;
+  margin: 0.45rem;
+  padding: 0.55rem;
+  border: 1px solid var(--color-border-light-2, rgba(255, 255, 255, 0.15));
+  border-radius: 5px;
+  background: var(--color-bg-option, rgba(0, 0, 0, 0.18));
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+  font-size: var(--font-size-12, 12px);
+}
+
+.eap-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-bottom: 0.4rem;
+  margin-bottom: 0.45rem;
+  border-bottom: 1px solid var(--color-border-light-2, rgba(255, 255, 255, 0.12));
+  font-weight: 700;
+}
+
+.eap-header > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.eap-status {
+  font-size: 0.75em;
+  font-weight: 600;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.eap-status[data-state="enhanced"] {
+  opacity: 1;
+}
+
+.eap-empty,
+.eap-error {
+  padding: 0.45rem 0.2rem;
+  text-align: center;
+  opacity: 0.75;
+}
+
+.eap-error {
+  color: var(--color-level-error, #d05b5b);
+}
+
+.eap-track-block {
+  margin-bottom: 0.5rem;
+  min-width: 0;
+}
+
+.eap-track-label,
+.eap-playlist-name {
+  opacity: 0.62;
+  font-size: 0.85em;
+}
+
+.eap-track-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.eap-transport {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.eap-transport button {
+  min-height: 28px;
+}
+
+.eap-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  margin: 0.35rem 0;
+}
+
+.eap-toggle input[type="checkbox"] {
+  flex: 0 0 auto;
+}
+
+.eap-full-track {
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--color-border-light-2, rgba(255, 255, 255, 0.1));
+}
+
+.eap-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.45rem;
+  margin: 0.4rem 0;
+}
+
+.eap-grid > label {
+  min-width: 0;
+}
+
+.eap-grid > label > span {
+  display: block;
+  margin-bottom: 0.15rem;
+  opacity: 0.8;
+}
+
+.eap-number {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.eap-number input {
+  width: 100%;
+  min-width: 0;
+  text-align: right;
+}
+
+.eap-number > span {
+  opacity: 0.6;
+}
+
+.eap-progress-wrap {
+  margin-top: 0.5rem;
+}
+
+.eap-progress-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.85em;
+  opacity: 0.7;
+}
+
+.eap-progress-wrap input[type="range"] {
+  width: 100%;
+  margin: 0.15rem 0 0;
+}
+
+.eap-selected-track {
+  outline: 1px solid var(--color-border-highlight, var(--color-warm-2, #c9a227));
+  outline-offset: -1px;
+  background: color-mix(in srgb, var(--color-warm-2, #c9a227) 12%, transparent) !important;
+}
