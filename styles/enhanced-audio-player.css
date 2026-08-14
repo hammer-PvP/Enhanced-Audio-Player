@@ -261,3 +261,30 @@
 .eap-timeline:not([data-full-track]) .eap-range-highlight {
   opacity: 0.62;
 }
+
+.eap-apply-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.45rem 0 0.2rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--color-border-light-2, rgba(255, 255, 255, 0.1));
+}
+
+.eap-dirty-hint {
+  min-width: 0;
+  opacity: 0.72;
+  font-size: 0.84em;
+}
+
+.eap-apply {
+  flex: 0 0 auto;
+  min-width: 62px;
+  min-height: 28px;
+  font-weight: 700;
+}
+
+.eap-panel[data-eap-dirty] .eap-apply:not(:disabled) {
+  outline: 1px solid var(--color-border-highlight, var(--color-warm-2, #c9a227));
+}

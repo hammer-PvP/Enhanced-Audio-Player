@@ -1,5 +1,11 @@
 import {MODULE_ID} from "./constants.js";
-import {findPlaylistSoundRow, isCurrentlyPlayingElement, isPlaylistDirectoryApplication, normalizeRenderElement, resolvePlaylistSoundFromElement} from "./compat.js";
+import {
+  findPlaylistSoundRow,
+  isCurrentlyPlayingElement,
+  isPlaylistDirectoryApplication,
+  normalizeRenderElement,
+  resolvePlaylistSoundFromElement
+} from "./compat.js";
 import {clamp, effectiveRange, readPlaybackConfig, resetPlaybackConfig, writePlaybackConfig} from "./config.js";
 
 const PANEL_CLASS = "eap-panel";
@@ -7,8 +13,15 @@ const SELECTED_CLASS = "eap-selected-track";
 const INTERACTIVE_SELECTOR = "button, input, select, textarea, [data-action], [role='button'], .control, .controls, .sound-control, .volume";
 const NUMERIC_KEYS = new Set(["start", "end", "fadeIn", "fadeOut"]);
 const STRUCTURAL_KEYS = new Set(["start", "end"]);
-const CONFIG_DEBOUNCE_MS = 300;
 
+/**
+ * Playlist-directory UI for the Enhanced Audio Player.
+ *
+ * v0.1.0 deliberately separates a local edit draft from persisted playback
+ * policy. Typing never updates the PlaylistSound document. The whole editor is
+ * committed atomically by the OK button, which prevents AppV2 rerenders from
+ * destroying focus/caret state while a GM is entering numbers with a numpad.
+ */
 export class EnhancedAudioPlayerUI {
   #selection;
   #runtime;
@@ -21,10 +34,8 @@ export class EnhancedAudioPlayerUI {
   #boundRoots = new WeakSet();
   #durationCache = new Map();
   #idlePositions = new Map();
-  #configTimer = null;
-  #pendingConfigContext = null;
-  #configChain = Promise.resolve();
   #lastCommittedConfig = null;
+  #dirty = false;
   #transportBusy = false;
   #suppressNextRangeChange = false;
 
@@ -65,10 +76,9 @@ export class EnhancedAudioPlayerUI {
     const resolved = this.#selection.resolve();
     if (!this.#panel?.isConnected) return;
 
-    this.#cancelConfigTimer();
-
     if (!resolved) {
       this.#lastCommittedConfig = null;
+      this.#dirty = false;
       this.#panel.innerHTML = this.#emptyPanelHtml();
       return;
     }
@@ -91,11 +101,12 @@ export class EnhancedAudioPlayerUI {
     const stored = readPlaybackConfig(sound);
     const config = {...stored, end: stored.end ?? duration};
     this.#lastCommittedConfig = {...config};
+    this.#dirty = false;
     this.#ensureIdlePosition(playlist, sound, config, duration);
 
     this.#panel.innerHTML = this.#configuredPanelHtml({playlist, sound, config, duration, loadError});
     this.#attachPanelListeners({playlist, sound, duration});
-    this.#syncConfigVisuals(duration);
+    this.#syncDraftVisuals(duration);
     this.#updateProgress();
   }
 
@@ -104,7 +115,7 @@ export class EnhancedAudioPlayerUI {
     if (resolved && !this.#runtime.getSession(resolved.playlist.id, resolved.sound.id)
       && !resolved.sound.playing && !resolved.sound.sound?.playing) {
       const duration = this.#cachedDuration(resolved.playlist, resolved.sound);
-      const config = this.#readPanelConfig({allowInvalidText: true}) ?? this.#lastCommittedConfig ?? readPlaybackConfig(resolved.sound);
+      const config = this.#lastCommittedConfig ?? readPlaybackConfig(resolved.sound);
       this.#setIdlePosition(resolved.playlist, resolved.sound, this.#defaultPosition(config, duration));
     }
     this.#updatePlaybackStatus();
@@ -115,6 +126,8 @@ export class EnhancedAudioPlayerUI {
     const playlistId = playlistSound.parent?.id;
     if (this.#selection.soundId !== playlistSound.id || this.#selection.playlistId !== playlistId) return;
     this.#selection.clear();
+    this.#lastCommittedConfig = null;
+    this.#dirty = false;
     this.#highlightSelection();
     void this.renderPanel();
   }
@@ -166,21 +179,17 @@ export class EnhancedAudioPlayerUI {
     if (isCurrentlyPlayingElement(event.target)) return;
     if (event.target.closest(INTERACTIVE_SELECTOR)) return;
 
-    const match = this.#resolveSoundFromElement(event.target);
+    const match = resolvePlaylistSoundFromElement(event.target, this.#root);
     if (!match) return;
 
-    if (this.#pendingConfigContext || this.#configTimer) {
-      await this.#flushConfigCommit(this.#pendingConfigContext);
-    }
+    // Unsaved edits are intentionally local to the selected occurrence and are
+    // discarded when another PlaylistSound is selected. Only OK persists them.
     this.#selection.select(match.playlist.id, match.sound.id);
     this.#highlightSelection(match.row);
     this.#isSeeking = false;
     this.#seekPointerId = null;
+    this.#dirty = false;
     void this.renderPanel();
-  }
-
-  #resolveSoundFromElement(target) {
-    return resolvePlaylistSoundFromElement(target, this.#root);
   }
 
   #highlightSelection(preferredRow = null) {
@@ -203,12 +212,11 @@ export class EnhancedAudioPlayerUI {
     if (!panel) return;
 
     panel.querySelector("[data-eap-action='play']")?.addEventListener("click", async () => {
-      if (this.#transportBusy) return;
+      if (this.#transportBusy || this.#dirty) return;
       this.#transportBusy = true;
       try {
-        await this.#flushConfigCommit({playlist, sound, duration});
-        const config = this.#readPanelConfig();
-        if (!config || !effectiveRange(config, duration).valid) {
+        const config = this.#lastCommittedConfig ?? readPlaybackConfig(sound);
+        if (!effectiveRange(config, duration).valid) {
           ui.notifications?.warn(localize("EAP.Notifications.InvalidRange"));
           return;
         }
@@ -243,7 +251,7 @@ export class EnhancedAudioPlayerUI {
       this.#transportBusy = true;
       try {
         await this.#runtime.stopFromGM(playlist, sound);
-        const config = this.#readPanelConfig({allowInvalidText: true}) ?? this.#lastCommittedConfig ?? readPlaybackConfig(sound);
+        const config = this.#lastCommittedConfig ?? readPlaybackConfig(sound);
         this.#setIdlePosition(playlist, sound, this.#defaultPosition(config, duration));
       } catch (error) {
         console.error(`${MODULE_ID} | Stop failed`, error);
@@ -255,15 +263,61 @@ export class EnhancedAudioPlayerUI {
       }
     });
 
+    panel.querySelector("[data-eap-action='apply']")?.addEventListener("click", async () => {
+      if (this.#transportBusy) return;
+      const draft = this.#readPanelConfig();
+      const range = draft ? effectiveRange(draft, duration) : null;
+      if (!draft || !range?.valid) {
+        ui.notifications?.warn(localize("EAP.Notifications.InvalidRange"));
+        this.#syncDraftVisuals(duration);
+        return;
+      }
+
+      this.#transportBusy = true;
+      try {
+        const previous = this.#lastCommittedConfig ?? readPlaybackConfig(sound);
+        const changedKeys = changedConfigKeys(previous, draft);
+        const structural = [...changedKeys].some(key => STRUCTURAL_KEYS.has(key));
+        const fullTrackTurnedOff = changedKeys.has("fullTrack") && previous.fullTrack !== false && draft.fullTrack === false;
+        const repositionToStart = structural || fullTrackTurnedOff;
+
+        // One atomic document write for the whole editor. The flag belongs to
+        // this PlaylistSound occurrence, so identical file paths in other
+        // playlists remain completely independent.
+        const saved = await writePlaybackConfig(sound, draft);
+        this.#lastCommittedConfig = {...saved, end: saved.end ?? duration};
+        this.#dirty = false;
+        this.#setIdlePosition(playlist, sound, this.#defaultPosition(this.#lastCommittedConfig, duration));
+
+        if (this.#runtime.isEnhanced(playlist.id, sound.id)) {
+          await this.#runtime.reconfigureFromGM(playlist, sound, this.#lastCommittedConfig, duration, {repositionToStart});
+        } else if (sound.playing || sound.sound?.playing) {
+          // A policy applied while the native track is already playing should
+          // take effect immediately for all connected clients.
+          await this.#runtime.playFromGM(playlist, sound, this.#lastCommittedConfig, duration);
+        }
+
+        ui.notifications?.info(localize("EAP.Notifications.SettingsSaved"));
+        this.#syncDraftVisuals(duration);
+        this.#updateProgress();
+      } catch (error) {
+        console.error(`${MODULE_ID} | Apply settings failed`, error);
+        ui.notifications?.error(localize("EAP.Notifications.SettingsSaveFailed"));
+      } finally {
+        this.#transportBusy = false;
+        this.#updatePlaybackStatus();
+      }
+    });
+
     panel.querySelector("[data-eap-action='reset']")?.addEventListener("click", async () => {
       if (this.#transportBusy) return;
       this.#transportBusy = true;
-      this.#cancelConfigTimer();
       try {
         await this.#runtime.resetBarrierFromGM(playlist, sound);
         await resetPlaybackConfig(sound);
         this.#setIdlePosition(playlist, sound, 0);
         this.#lastCommittedConfig = {fullTrack: true, start: 0, end: duration, loop: false, fadeIn: 0, fadeOut: 0};
+        this.#dirty = false;
         ui.notifications?.info(localize("EAP.Notifications.ResetComplete"));
         await this.renderPanel();
       } catch (error) {
@@ -277,41 +331,33 @@ export class EnhancedAudioPlayerUI {
     for (const input of panel.querySelectorAll("[data-eap-config]")) {
       const key = input.dataset.eapConfig;
       if (!key) continue;
-
       if (NUMERIC_KEYS.has(key)) this.#isolateNumericInput(input);
 
-      if (input.type === "checkbox") {
-        input.addEventListener("change", () => {
-          void this.#commitConfig({playlist, sound, duration, changedKeys: new Set([key])});
-        });
-        continue;
+      const updateDraft = () => {
+        if (input.type !== "checkbox") this.#markInputValidity(input);
+        this.#updateDirtyState();
+        this.#syncDraftVisuals(duration);
+      };
+
+      if (input.type === "checkbox") input.addEventListener("change", updateDraft);
+      else {
+        input.addEventListener("input", updateDraft);
+        input.addEventListener("change", updateDraft);
       }
-
-      input.addEventListener("input", () => {
-        this.#markInputValidity(input);
-        this.#syncConfigVisuals(duration);
-        this.#scheduleConfigCommit({playlist, sound, duration, changedKeys: new Set([key])});
-      });
-
-      input.addEventListener("change", () => {
-        void this.#commitConfig({playlist, sound, duration, changedKeys: new Set([key])});
-      });
-
-      input.addEventListener("blur", () => {
-        void this.#flushConfigCommit({playlist, sound, duration});
-      });
     }
 
     const progress = panel.querySelector("[data-eap-progress]");
     progress?.addEventListener("pointerdown", event => {
+      if (this.#dirty) return;
       this.#isSeeking = true;
       this.#seekPointerId = event.pointerId;
       try { progress.setPointerCapture(event.pointerId); } catch (_error) { /* optional */ }
     });
 
     progress?.addEventListener("input", event => {
+      if (this.#dirty) return;
       this.#isSeeking = true;
-      const config = this.#readPanelConfig({allowInvalidText: true}) ?? this.#lastCommittedConfig;
+      const config = this.#lastCommittedConfig ?? readPlaybackConfig(sound);
       const bounds = this.#seekBounds(config, duration);
       const raw = Number(event.currentTarget.value);
       const value = bounds.valid ? clamp(raw, bounds.min, bounds.max) : raw;
@@ -321,6 +367,7 @@ export class EnhancedAudioPlayerUI {
     });
 
     progress?.addEventListener("pointerup", async event => {
+      if (this.#dirty) return;
       if (this.#seekPointerId !== null && event.pointerId !== this.#seekPointerId) return;
       try { progress.releasePointerCapture(event.pointerId); } catch (_error) { /* optional */ }
       this.#seekPointerId = null;
@@ -336,9 +383,7 @@ export class EnhancedAudioPlayerUI {
     });
 
     progress?.addEventListener("change", async event => {
-      // Pointer changes are committed by pointerup. This path handles keyboard
-      // interaction with the range input.
-      if (this.#seekPointerId !== null || this.#suppressNextRangeChange) return;
+      if (this.#dirty || this.#seekPointerId !== null || this.#suppressNextRangeChange) return;
       await this.#commitSeek({playlist, sound, duration, progress: event.currentTarget});
     });
 
@@ -348,7 +393,7 @@ export class EnhancedAudioPlayerUI {
       this.#updateProgress();
     });
 
-    this.#syncConfigVisuals(duration);
+    this.#syncDraftVisuals(duration);
   }
 
   #isolateNumericInput(input) {
@@ -380,10 +425,9 @@ export class EnhancedAudioPlayerUI {
         return;
       }
 
-      if (event.key === "Enter") {
-        event.preventDefault();
-        input.blur();
-      }
+      // Enter, including NumpadEnter, is consumed but never blurs or commits.
+      // The explicit OK button is the only configuration commit boundary.
+      if (event.key === "Enter" || event.code === "NumpadEnter") event.preventDefault();
     });
     input.addEventListener("keyup", stop);
     input.addEventListener("keypress", stop);
@@ -394,90 +438,24 @@ export class EnhancedAudioPlayerUI {
     }, {passive: false});
   }
 
-  #scheduleConfigCommit(context) {
-    this.#cancelConfigTimer({keepContext: true});
-    this.#pendingConfigContext = context;
-    this.#configTimer = setTimeout(() => {
-      const pending = this.#pendingConfigContext;
-      this.#configTimer = null;
-      this.#pendingConfigContext = null;
-      if (pending) void this.#commitConfig(pending);
-    }, CONFIG_DEBOUNCE_MS);
-  }
-
-  #cancelConfigTimer({keepContext = false} = {}) {
-    if (this.#configTimer) clearTimeout(this.#configTimer);
-    this.#configTimer = null;
-    if (!keepContext) this.#pendingConfigContext = null;
-  }
-
-  async #flushConfigCommit(context) {
-    if (this.#configTimer) {
-      const pending = this.#pendingConfigContext ?? context;
-      this.#cancelConfigTimer();
-      if (pending) await this.#commitConfig(pending);
-    }
-    await this.#configChain.catch(() => {});
-  }
-
-  #commitConfig({playlist, sound, duration, changedKeys}) {
-    this.#cancelConfigTimer();
-    const config = this.#readPanelConfig();
-    if (!config) {
-      this.#syncConfigVisuals(duration);
-      return Promise.resolve(false);
-    }
-
-    const previous = this.#lastCommittedConfig ?? readPlaybackConfig(sound);
-    const snapshot = {...config};
-    const keys = new Set(changedKeys ?? []);
-    this.#lastCommittedConfig = snapshot;
-    this.#syncConfigVisuals(duration);
-
-    const operation = async () => {
-      const stillSelected = this.#selection.playlistId === playlist.id && this.#selection.soundId === sound.id;
-      if (!stillSelected) return false;
-
-      const structural = [...keys].some(key => STRUCTURAL_KEYS.has(key));
-      const fullTrackTurnedOff = keys.has("fullTrack") && previous.fullTrack !== false && snapshot.fullTrack === false;
-      const repositionToStart = structural || fullTrackTurnedOff;
-      const range = effectiveRange(snapshot, duration);
-
-      if (repositionToStart) {
-        this.#setIdlePosition(playlist, sound, range.valid ? range.start : clamp(Number(snapshot.start) || 0, 0, duration));
-      } else if (keys.has("fullTrack") && snapshot.fullTrack) {
-        const current = this.#getDisplayedPosition(playlist, sound, snapshot, duration);
-        this.#setIdlePosition(playlist, sound, clamp(current, 0, duration));
-      }
-
-      if (this.#runtime.isEnhanced(playlist.id, sound.id)) {
-        await this.#runtime.reconfigureFromGM(playlist, sound, snapshot, duration, {repositionToStart});
-      }
-
-      await writePlaybackConfig(sound, snapshot);
-      if (this.#selection.playlistId === playlist.id && this.#selection.soundId === sound.id) {
-        this.#syncConfigVisuals(duration);
-        this.#updateProgress();
-      }
-      return true;
-    };
-
-    this.#configChain = this.#configChain.catch(() => {}).then(operation);
-    return this.#configChain;
+  #updateDirtyState() {
+    const draft = this.#readPanelConfig({allowInvalidText: true});
+    const hasInvalidText = Boolean(this.#panel?.querySelector(".eap-input-invalid"));
+    this.#dirty = hasInvalidText || !draft || !configsEqual(draft, this.#lastCommittedConfig);
+    this.#panel?.toggleAttribute("data-eap-dirty", this.#dirty);
   }
 
   async #commitSeek({playlist, sound, duration, progress}) {
-    if (this.#transportBusy) {
+    if (this.#transportBusy || this.#dirty) {
       this.#isSeeking = false;
       return;
     }
 
     this.#transportBusy = true;
     try {
-      await this.#flushConfigCommit({playlist, sound, duration, changedKeys: new Set()});
-      const config = this.#readPanelConfig();
-      const range = config ? effectiveRange(config, duration) : null;
-      if (!config || !range?.valid) {
+      const config = this.#lastCommittedConfig ?? readPlaybackConfig(sound);
+      const range = effectiveRange(config, duration);
+      if (!range.valid) {
         ui.notifications?.warn(localize("EAP.Notifications.InvalidRange"));
         return;
       }
@@ -504,6 +482,9 @@ export class EnhancedAudioPlayerUI {
 
     const config = {};
     let validText = true;
+    const fullTrackInput = panel.querySelector("[data-eap-config='fullTrack']");
+    const fullTrack = Boolean(fullTrackInput?.checked);
+
     for (const input of panel.querySelectorAll("[data-eap-config]")) {
       const key = input.dataset.eapConfig;
       if (!key) continue;
@@ -514,10 +495,13 @@ export class EnhancedAudioPlayerUI {
 
       const parsed = parseDecimal(input.value);
       const valid = Number.isFinite(parsed) && parsed >= 0;
-      input.classList.toggle("eap-input-invalid", !valid);
+      const ignoredInvalidRangeField = fullTrack && (key === "start" || key === "end");
+      input.classList.toggle("eap-input-invalid", !valid && !ignoredInvalidRangeField);
       if (!valid) {
-        validText = false;
-        if (allowInvalidText) config[key] = Number(this.#lastCommittedConfig?.[key]) || 0;
+        if (ignoredInvalidRangeField || allowInvalidText) {
+          const fallback = Number(this.#lastCommittedConfig?.[key]);
+          config[key] = Number.isFinite(fallback) ? fallback : 0;
+        } else validText = false;
       } else config[key] = parsed;
     }
 
@@ -526,17 +510,24 @@ export class EnhancedAudioPlayerUI {
   }
 
   #markInputValidity(input) {
+    const key = input.dataset.eapConfig;
+    const fullTrack = this.#panel?.querySelector("[data-eap-config='fullTrack']")?.checked;
+    if (fullTrack && (key === "start" || key === "end")) {
+      input.classList.remove("eap-input-invalid");
+      return;
+    }
     const parsed = parseDecimal(input.value);
     input.classList.toggle("eap-input-invalid", !Number.isFinite(parsed) || parsed < 0);
   }
 
-  #syncConfigVisuals(duration) {
+  #syncDraftVisuals(duration) {
     const panel = this.#panel;
     if (!panel) return;
 
-    const config = this.#readPanelConfig({allowInvalidText: true}) ?? this.#lastCommittedConfig;
-    if (!config) return;
-    const fullTrack = config.fullTrack !== false;
+    const draft = this.#readPanelConfig({allowInvalidText: true}) ?? this.#lastCommittedConfig;
+    const committed = this.#lastCommittedConfig;
+    if (!draft || !committed) return;
+    const fullTrack = draft.fullTrack !== false;
 
     for (const key of ["start", "end", "loop"]) {
       const input = panel.querySelector(`[data-eap-config='${key}']`);
@@ -545,21 +536,37 @@ export class EnhancedAudioPlayerUI {
 
     const timeline = panel.querySelector("[data-eap-timeline]");
     timeline?.toggleAttribute("data-full-track", fullTrack);
-    this.#updateTimelineMarkers(duration, config);
+    this.#updateTimelineMarkers(duration, draft);
 
-    const range = effectiveRange(config, duration);
+    const range = effectiveRange(draft, duration);
     const hasInvalidText = Boolean(panel.querySelector(".eap-input-invalid"));
-    const controlsValid = duration > 0 && range.valid && !hasInvalidText;
+    const draftValid = duration > 0 && range.valid && !hasInvalidText;
     const warning = panel.querySelector("[data-eap-warning]");
-    if (warning) warning.hidden = fullTrack || duration <= 0 || (range.valid && !hasInvalidText);
+    if (warning) warning.hidden = fullTrack || duration <= 0 || draftValid;
 
+    this.#updateDirtyStateWithoutRecursion(draft);
+    const apply = panel.querySelector("[data-eap-action='apply']");
+    if (apply) apply.disabled = !this.#dirty || !draftValid || this.#transportBusy;
+
+    const dirtyHint = panel.querySelector("[data-eap-dirty-hint]");
+    if (dirtyHint) dirtyHint.hidden = !this.#dirty;
+
+    // Transport always uses the committed policy. While a draft is pending,
+    // Play/Seek are disabled so the visual editor can never disagree with the
+    // policy currently driving clients.
+    const committedValid = duration > 0 && effectiveRange(committed, duration).valid;
     const play = panel.querySelector("[data-eap-action='play']");
-    if (play) play.disabled = !controlsValid;
-
+    if (play) play.disabled = !committedValid || this.#dirty || this.#transportBusy;
     const progress = panel.querySelector("[data-eap-progress]");
-    if (progress) progress.disabled = !controlsValid;
+    if (progress) progress.disabled = !committedValid || this.#dirty || this.#transportBusy;
 
-    if (!this.#isSeeking) this.#enforceDisplayedPosition(config, duration);
+    if (!this.#isSeeking && !this.#dirty) this.#enforceDisplayedPosition(committed, duration);
+  }
+
+  #updateDirtyStateWithoutRecursion(draft) {
+    const hasInvalidText = Boolean(this.#panel?.querySelector(".eap-input-invalid"));
+    this.#dirty = hasInvalidText || !configsEqual(draft, this.#lastCommittedConfig);
+    this.#panel?.toggleAttribute("data-eap-dirty", this.#dirty);
   }
 
   #seekBounds(config, duration) {
@@ -577,7 +584,7 @@ export class EnhancedAudioPlayerUI {
     if (!bounds.valid) return;
 
     const session = this.#runtime.getSession(resolved.playlist.id, resolved.sound.id);
-    if (session) return; // runtime is authoritative while active/paused
+    if (session) return;
 
     const current = this.#getIdlePosition(resolved.playlist, resolved.sound, config, duration);
     const clamped = clamp(current, bounds.min, bounds.max);
@@ -594,7 +601,7 @@ export class EnhancedAudioPlayerUI {
     const timeline = panel?.querySelector("[data-eap-timeline]");
     if (!panel || !timeline || duration <= 0) return;
 
-    const config = suppliedConfig ?? this.#readPanelConfig({allowInvalidText: true}) ?? this.#lastCommittedConfig;
+    const config = suppliedConfig ?? this.#lastCommittedConfig;
     if (!config) return;
     const fullTrack = config.fullTrack !== false;
     const start = Math.max(0, Number(config.start) || 0);
@@ -650,17 +657,17 @@ export class EnhancedAudioPlayerUI {
     if (!session && Number.isFinite(candidate) && candidate > 0) duration = this.#rememberDuration(playlist, sound, candidate);
     if (duration <= 0) return;
 
-    const config = this.#readPanelConfig({allowInvalidText: true}) ?? this.#lastCommittedConfig ?? readPlaybackConfig(sound);
-    const bounds = this.#seekBounds(config, duration);
+    const committed = this.#lastCommittedConfig ?? readPlaybackConfig(sound);
+    const bounds = this.#seekBounds(committed, duration);
     const slider = panel.querySelector("[data-eap-progress]");
     if (slider) {
       slider.min = "0";
       slider.max = String(duration);
-      slider.disabled = !bounds.valid;
+      slider.disabled = !bounds.valid || this.#dirty || this.#transportBusy;
     }
 
     if (!this.#isSeeking) {
-      let current = this.#getDisplayedPosition(playlist, sound, config, duration);
+      let current = this.#getDisplayedPosition(playlist, sound, committed, duration);
       current = bounds.valid ? clamp(current, bounds.min, bounds.max) : clamp(current, 0, duration);
       if (!session && !sound.sound?.playing) this.#setIdlePosition(playlist, sound, current);
       if (slider) slider.value = String(current);
@@ -670,7 +677,7 @@ export class EnhancedAudioPlayerUI {
 
     const totalLabel = panel.querySelector("[data-eap-progress-end]");
     if (totalLabel) totalLabel.textContent = formatTime(duration);
-    this.#updateTimelineMarkers(duration, config);
+    if (!this.#dirty) this.#updateTimelineMarkers(duration, committed);
     this.#updatePlaybackStatus();
   }
 
@@ -792,6 +799,13 @@ export class EnhancedAudioPlayerUI {
         </label>
       </div>
 
+      <div class="eap-apply-row">
+        <span class="eap-dirty-hint" data-eap-dirty-hint hidden>${escapeHtml(localize("EAP.UnsavedChanges"))}</span>
+        <button type="button" class="eap-apply" data-eap-action="apply" disabled>
+          <i class="fa-solid fa-check"></i> ${escapeHtml(localize("EAP.OK"))}
+        </button>
+      </div>
+
       <div class="eap-progress-wrap">
         <div class="eap-progress-labels">
           <span><span class="eap-progress-caption">${escapeHtml(localize("EAP.Current"))}</span> <strong data-eap-current>${formatTime(current)}</strong></span>
@@ -817,6 +831,27 @@ export class EnhancedAudioPlayerUI {
       </div>
     `;
   }
+}
+
+function changedConfigKeys(previous, next) {
+  const keys = new Set();
+  for (const key of ["fullTrack", "start", "end", "loop", "fadeIn", "fadeOut"]) {
+    if (!sameValue(previous?.[key], next?.[key])) keys.add(key);
+  }
+  return keys;
+}
+
+function configsEqual(a, b) {
+  if (!a || !b) return false;
+  return ["fullTrack", "start", "end", "loop", "fadeIn", "fadeOut"].every(key => sameValue(a[key], b[key]));
+}
+
+function sameValue(a, b) {
+  if (typeof a === "boolean" || typeof b === "boolean") return Boolean(a) === Boolean(b);
+  if (a === null || a === undefined || b === null || b === undefined) return (a ?? null) === (b ?? null);
+  const an = Number(a);
+  const bn = Number(b);
+  return Number.isFinite(an) && Number.isFinite(bn) ? Math.abs(an - bn) < 0.0005 : String(a) === String(b);
 }
 
 function localize(key) {

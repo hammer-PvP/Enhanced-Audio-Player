@@ -24,14 +24,15 @@ Hooks.once("ready", () => {
   runtime = new PlaybackRuntime({onSessionChanged: () => uiController?.onSessionChanged()});
   uiController = new EnhancedAudioPlayerUI({selection, runtime});
   runtime.registerSocket();
+  void runtime.reconcileCurrentlyPlaying();
 });
 
 Hooks.on("renderApplicationV2", (application, element) => {
   uiController?.onPlaylistDirectoryRender(application, element);
 });
 
-Hooks.on("updatePlaylistSound", (playlistSound, changed) => {
-  void runtime?.onPlaylistSoundUpdated(playlistSound, changed);
+Hooks.on("updatePlaylistSound", (playlistSound, changed, options, userId) => {
+  void runtime?.onPlaylistSoundUpdated(playlistSound, changed, options, userId);
 });
 
 Hooks.on("deletePlaylistSound", playlistSound => {

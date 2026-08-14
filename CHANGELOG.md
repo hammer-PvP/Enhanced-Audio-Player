@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.0
+
+Explicit-commit editor and per-playlist playback-policy release.
+
+- Replaced automatic/debounced configuration persistence with a local editor draft and explicit **OK** commit. Typing Start/End/Fades no longer calls `setFlag`, rerenders the PlaylistSound, or destroys input focus/caret state.
+- Numpad Enter is now consumed without blur or commit. Numeric fields continue isolating numpad/key/wheel events from Foundry/browser shortcuts.
+- Full Track, Start, End, Loop Range, Fade In, and Fade Out are committed together as one validated configuration.
+- Unsaved drafts are never used as the live transport policy; Play and timeline seek are temporarily disabled until OK, preventing UI/runtime state disagreement.
+- Reset Track remains an immediate transport barrier and removes only the selected occurrence's EAP flag.
+- Formalized playback-policy scope as **Playlist ID + PlaylistSound ID**, never audio file path. The same physical file can have independent settings in Root and in every playlist occurrence.
+- Added automatic policy application when Foundry starts a configured PlaylistSound natively, including normal sequential/shuffled playlist progression.
+- Non-looping custom ranges now conclude at End and delegate next-track progression to Foundry's public `Playlist.playNext(soundId)` when applicable; other modes stop the occurrence.
+- Loop Range remains Start → End until stopped or another track takes over.
+- Preserved v0.0.4 absolute seek, Play/Pause/Stop behavior, full-duration timeline, command serialization, V13.341+ compatibility adapter, and native Sound architecture.
+
 ## 0.0.4
 
 Absolute-seek correction and Foundry V13 compatibility patch.

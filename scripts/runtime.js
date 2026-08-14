@@ -1,5 +1,5 @@
 import {MODULE_ID, SOCKET_CHANNEL, SOCKET_TYPES} from "./constants.js";
-import {clamp, effectiveRange} from "./config.js";
+import {clamp, effectiveRange, readPlaybackConfig} from "./config.js";
 
 function sessionKey(playlistId, soundId) {
   return `${playlistId}.${soundId}`;
@@ -20,6 +20,21 @@ function samePolicy(session, range, trackDuration) {
     && Number(session.fadeOut) === Number(range.fadeOut);
 }
 
+function requiresEnhancedPolicy(config) {
+  return config?.fullTrack === false
+    || Number(config?.fadeIn) > 0
+    || Number(config?.fadeOut) > 0;
+}
+
+function chooseControllerUserId(requestedUserId = null) {
+  const requested = requestedUserId ? game.users?.get?.(requestedUserId) : null;
+  if (requested?.isGM) return requested.id;
+
+  const users = game.users?.contents ?? Array.from(game.users ?? []);
+  const activeGMs = users.filter(user => user?.isGM && user?.active).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  return activeGMs[0]?.id ?? null;
+}
+
 export class PlaybackRuntime {
   #sessions = new Map();
   #onSessionChanged;
@@ -36,6 +51,17 @@ export class PlaybackRuntime {
     game.socket.on(SOCKET_CHANNEL, payload => {
       void this.#handleSocket(payload);
     });
+  }
+
+  async reconcileCurrentlyPlaying() {
+    const playlists = game.playlists?.values?.() ?? game.playlists ?? [];
+    for (const playlist of playlists) {
+      const sounds = playlist.sounds?.values?.() ?? playlist.sounds ?? [];
+      for (const sound of sounds) {
+        if (!sound.playing) continue;
+        await this.#startPersistedPolicyFromNative(sound, null);
+      }
+    }
   }
 
   getSession(playlistId, soundId) {
@@ -123,7 +149,7 @@ export class PlaybackRuntime {
   }
 
   /**
-   * Reconcile a live Enhanced session after an on-the-fly configuration edit.
+   * Reconcile a live Enhanced session after an explicit OK configuration commit.
    * This does nothing when the selected track is not in an Enhanced session.
    */
   async reconfigureFromGM(playlist, playlistSound, config, duration, {repositionToStart = false} = {}) {
@@ -203,7 +229,7 @@ export class PlaybackRuntime {
     await Promise.resolve();
   }
 
-  async onPlaylistSoundUpdated(playlistSound, changed) {
+  async onPlaylistSoundUpdated(playlistSound, changed, _options = {}, userId = null) {
     const playlistId = playlistSound.parent?.id;
     if (!playlistId) return;
     const key = sessionKey(playlistId, playlistSound.id);
@@ -211,8 +237,6 @@ export class PlaybackRuntime {
     if (changed.playing === false) {
       // Defer one turn and inspect current document state. This avoids a stale
       // native stop update killing a newer Enhanced PLAY that already won.
-      // Do not mint a local revision here: socket revisions are authored by the
-      // controlling GM and must remain comparable across clients.
       queueMicrotask(() => {
         if (playlistSound.playing !== false) return;
         const session = this.#sessions.get(key);
@@ -227,9 +251,72 @@ export class PlaybackRuntime {
       return;
     }
 
-    if (changed.playing === true && this.#sessions.has(key)) {
+    if (changed.playing !== true) return;
+
+    if (this.#sessions.has(key)) {
       this.#scheduleNativeReconcile(playlistId, playlistSound.id);
+      return;
     }
+
+    // v0.1.0: persisted policy belongs to this exact PlaylistSound occurrence.
+    // When Foundry starts it natively (including automatic playlist advance),
+    // apply that occurrence's saved range/fades without replacing Playlist or
+    // Sound classes. A duplicate file in another Playlist is a different
+    // PlaylistSound and therefore resolves independent flags.
+    await this.#startPersistedPolicyFromNative(playlistSound, userId);
+  }
+
+  async #startPersistedPolicyFromNative(playlistSound, controllerUserId = null) {
+    const playlist = playlistSound.parent;
+    if (!playlist || !playlistSound.playing) return;
+
+    const config = readPlaybackConfig(playlistSound);
+    if (!requiresEnhancedPolicy(config)) return;
+
+    // Capture the native revision before any asynchronous load. If an explicit
+    // GM Play/Seek command is issued while loading, its later integer revision
+    // wins and this native-start policy becomes stale instead of overriding it.
+    const key = sessionKey(playlist.id, playlistSound.id);
+    const prior = Number(this.#latestRevision.get(key)) || 0;
+    const revision = prior + 0.5;
+
+    try {
+      await playlistSound.load();
+    } catch (error) {
+      console.warn(`${MODULE_ID} | Could not load native-started PlaylistSound policy`, error);
+      return;
+    }
+
+    if (!playlistSound.playing) return;
+    const duration = Number(playlistSound.sound?.duration) || 0;
+    const range = effectiveRange(config, duration);
+    if (!range.valid) {
+      console.warn(`${MODULE_ID} | Saved policy is invalid for ${playlistSound.name}; leaving native playback untouched.`);
+      return;
+    }
+
+    // Native document updates are already synchronized by Foundry. Give their
+    // local policy session a fractional revision just above the command state
+    // that existed when the native start was first observed.
+    const command = {
+      type: SOCKET_TYPES.PLAY,
+      revision,
+      sessionId: nowId(),
+      playlistId: playlist.id,
+      soundId: playlistSound.id,
+      controllerUserId: chooseControllerUserId(controllerUserId),
+      trackDuration: duration,
+      rangeStart: range.start,
+      rangeEnd: range.end,
+      offset: range.start,
+      loop: Boolean(range.loop),
+      fadeIn: Number(range.fadeIn) || 0,
+      fadeOut: Number(range.fadeOut) || 0,
+      paused: false,
+      nativePolicy: true
+    };
+
+    await this.#acceptCommand(command);
   }
 
   async onPlaylistSoundDeleted(playlistSound) {
@@ -563,10 +650,21 @@ export class PlaybackRuntime {
     if (game.user?.isGM && game.user.id === session.controllerUserId) {
       const resolved = resolveSound(session.playlistId, session.soundId);
       if (resolved?.sound?.playing) {
+        let advanced = false;
         try {
-          await resolved.playlist.stopSound(resolved.sound);
+          // Public Foundry API: sequential/shuffled playlists advance using
+          // their own playback order. Other modes return null/undefined.
+          advanced = Boolean(await resolved.playlist.playNext(resolved.sound.id));
         } catch (error) {
-          console.warn(`${MODULE_ID} | Failed to finalize native PlaylistSound state`, error);
+          console.debug(`${MODULE_ID} | Playlist playNext was not applicable`, error);
+        }
+
+        if (!advanced && resolved.sound.playing) {
+          try {
+            await resolved.playlist.stopSound(resolved.sound);
+          } catch (error) {
+            console.warn(`${MODULE_ID} | Failed to finalize native PlaylistSound state`, error);
+          }
         }
       }
     }
