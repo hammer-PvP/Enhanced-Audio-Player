@@ -3,7 +3,7 @@
   "EAP.SelectTrack": "Selecione um som dentro de uma playlist expandida.",
   "EAP.Loading": "Carregando metadados do áudio...",
   "EAP.LoadError": "Não foi possível carregar o áudio selecionado.",
-  "EAP.SelectedTrack": "Faixa Selecionada",
+  "EAP.SelectedTrack": "Selecionada",
   "EAP.Play": "Play",
   "EAP.Pause": "Pausar",
   "EAP.Stop": "Stop",
@@ -31,5 +31,9 @@
   "EAP.OK": "OK",
   "EAP.UnsavedChanges": "Alterações não salvas — clique em OK para aplicar.",
   "EAP.Notifications.SettingsSaved": "Enhanced Audio Player: configurações da faixa salvas.",
-  "EAP.Notifications.SettingsSaveFailed": "Enhanced Audio Player não conseguiu salvar a configuração desta faixa."
+  "EAP.Notifications.SettingsSaveFailed": "Enhanced Audio Player não conseguiu salvar a configuração desta faixa.",
+  "EAP.PlayingTrack": "Tocando",
+  "EAP.Resume": "Retomar",
+  "EAP.NoTrackPlaying": "Nenhuma",
+  "EAP.Notifications.PauseResumeFailed": "Enhanced Audio Player não conseguiu pausar ou retomar a reprodução."
 }

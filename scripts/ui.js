@@ -106,6 +106,7 @@ export class EnhancedAudioPlayerUI {
 
     this.#panel.innerHTML = this.#configuredPanelHtml({playlist, sound, config, duration, loadError});
     this.#attachPanelListeners({playlist, sound, duration});
+    this.#updateActiveTrackInfo();
     this.#syncDraftVisuals(duration);
     this.#updateProgress();
   }
@@ -120,6 +121,29 @@ export class EnhancedAudioPlayerUI {
     }
     this.#updatePlaybackStatus();
     this.#updateProgress();
+  }
+
+  onTrackStarted(track) {
+    if (!game.user?.isGM) return;
+
+    // Startup reconciliation only informs the Playing line. Auto-follow is
+    // reserved for a genuine NEW playing=true transition after the UI is live.
+    if (!track?.autoFollow) {
+      this.#updateActiveTrackInfo();
+      this.#updatePlaybackStatus();
+      return;
+    }
+
+    // A new track starting is an explicit selection boundary. Any uncommitted
+    // draft on the previously selected occurrence is discarded; OK remains the
+    // only way to persist edits. The GM can immediately click another track and
+    // edit it while the active track continues playing without selection theft.
+    this.#selection.select(track.playlistId, track.soundId);
+    this.#dirty = false;
+    this.#isSeeking = false;
+    this.#seekPointerId = null;
+    this.#highlightSelection();
+    void this.renderPanel();
   }
 
   onSoundDeleted(playlistSound) {
@@ -235,10 +259,14 @@ export class EnhancedAudioPlayerUI {
       if (this.#transportBusy) return;
       this.#transportBusy = true;
       try {
-        await this.#runtime.pauseFromGM(playlist.id, sound.id);
+        if (this.#runtime.isPaused(playlist.id, sound.id)) {
+          await this.#runtime.resumeFromGM(playlist.id, sound.id);
+        } else {
+          await this.#runtime.pauseFromGM(playlist.id, sound.id);
+        }
       } catch (error) {
-        console.error(`${MODULE_ID} | Pause failed`, error);
-        ui.notifications?.error(localize("EAP.Notifications.PauseFailed"));
+        console.error(`${MODULE_ID} | Pause/Resume failed`, error);
+        ui.notifications?.error(localize("EAP.Notifications.PauseResumeFailed"));
       } finally {
         this.#transportBusy = false;
         this.#updatePlaybackStatus();
@@ -704,9 +732,32 @@ export class EnhancedAudioPlayerUI {
     }
 
     const pauseButton = panel.querySelector("[data-eap-action='pause']");
-    if (pauseButton) pauseButton.disabled = !session || Boolean(session.paused) || this.#transportBusy;
+    if (pauseButton) {
+      pauseButton.disabled = (!session && !resolved.sound.playing && !resolved.sound.sound?.playing) || this.#transportBusy;
+      pauseButton.innerHTML = session?.paused
+        ? `<i class="fa-solid fa-play"></i> ${escapeHtml(localize("EAP.Resume"))}`
+        : `<i class="fa-solid fa-pause"></i> ${escapeHtml(localize("EAP.Pause"))}`;
+    }
     const stopButton = panel.querySelector("[data-eap-action='stop']");
     if (stopButton) stopButton.disabled = (!session && !resolved.sound.playing && !resolved.sound.sound?.playing) || this.#transportBusy;
+    this.#updateActiveTrackInfo();
+  }
+
+  #updateActiveTrackInfo() {
+    const panel = this.#panel;
+    if (!panel) return;
+    const active = this.#runtime.getActiveTrack();
+    const name = panel.querySelector("[data-eap-playing-name]");
+    const playlist = panel.querySelector("[data-eap-playing-playlist]");
+    if (name) {
+      name.textContent = active?.sound?.name ?? localize("EAP.NoTrackPlaying");
+      name.title = active?.sound?.name ?? "";
+      name.classList.toggle("eap-track-none", !active);
+    }
+    if (playlist) {
+      playlist.textContent = active ? `· ${active.playlist.name}` : "";
+      playlist.title = active?.playlist?.name ?? "";
+    }
   }
 
   #emptyPanelHtml() {
@@ -746,10 +797,15 @@ export class EnhancedAudioPlayerUI {
         <span class="eap-status" data-eap-status data-state="${session?.paused ? "paused" : (session ? "enhanced" : "idle")}">${escapeHtml(status)}</span>
       </header>
 
-      <div class="eap-track-block">
-        <div class="eap-track-label">${escapeHtml(localize("EAP.SelectedTrack"))}</div>
-        <div class="eap-track-name" title="${escapeHtml(sound.name)}">${escapeHtml(sound.name)}</div>
-        <div class="eap-playlist-name">${escapeHtml(playlist.name)}</div>
+      <div class="eap-track-summary">
+        <div class="eap-track-row">
+          <span class="eap-track-label">${escapeHtml(localize("EAP.SelectedTrack"))}</span>
+          <span class="eap-track-value"><strong class="eap-track-name" title="${escapeHtml(sound.name)}">${escapeHtml(sound.name)}</strong> <span class="eap-playlist-name">· ${escapeHtml(playlist.name)}</span></span>
+        </div>
+        <div class="eap-track-row">
+          <span class="eap-track-label">${escapeHtml(localize("EAP.PlayingTrack"))}</span>
+          <span class="eap-track-value"><strong class="eap-track-name" data-eap-playing-name></strong> <span class="eap-playlist-name" data-eap-playing-playlist></span></span>
+        </div>
       </div>
 
       ${loadError ? `<div class="eap-error">${escapeHtml(localize("EAP.LoadError"))}</div>` : ""}
@@ -759,8 +815,10 @@ export class EnhancedAudioPlayerUI {
         <button type="button" data-eap-action="play" ${canPlay ? "" : "disabled"}>
           <i class="fa-solid fa-play"></i> ${escapeHtml(localize("EAP.Play"))}
         </button>
-        <button type="button" data-eap-action="pause" ${session && !session.paused ? "" : "disabled"}>
-          <i class="fa-solid fa-pause"></i> ${escapeHtml(localize("EAP.Pause"))}
+        <button type="button" data-eap-action="pause" ${session || sound.playing || sound.sound?.playing ? "" : "disabled"}>
+          ${session?.paused
+            ? `<i class="fa-solid fa-play"></i> ${escapeHtml(localize("EAP.Resume"))}`
+            : `<i class="fa-solid fa-pause"></i> ${escapeHtml(localize("EAP.Pause"))}`}
         </button>
         <button type="button" data-eap-action="stop" ${session || sound.playing || sound.sound?.playing ? "" : "disabled"}>
           <i class="fa-solid fa-stop"></i> ${escapeHtml(localize("EAP.Stop"))}

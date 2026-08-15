@@ -10,15 +10,6 @@ function nowId() {
   return `${Date.now()}-${random}`;
 }
 
-function samePolicy(session, range, trackDuration) {
-  return Boolean(session)
-    && Number(session.trackDuration) === Number(trackDuration)
-    && Number(session.rangeStart) === Number(range.start)
-    && Number(session.rangeEnd) === Number(range.end)
-    && Boolean(session.loop) === Boolean(range.loop)
-    && Number(session.fadeIn) === Number(range.fadeIn)
-    && Number(session.fadeOut) === Number(range.fadeOut);
-}
 
 function requiresEnhancedPolicy(config) {
   return config?.fullTrack === false
@@ -38,13 +29,16 @@ function chooseControllerUserId(requestedUserId = null) {
 export class PlaybackRuntime {
   #sessions = new Map();
   #onSessionChanged;
+  #onTrackStarted;
+  #activeTrack = null;
   #latestRevision = new Map();
   #queues = new Map();
   #revisionCounter = 0;
   #nativeReconcileTimers = new Map();
 
-  constructor({onSessionChanged} = {}) {
+  constructor({onSessionChanged, onTrackStarted} = {}) {
     this.#onSessionChanged = onSessionChanged ?? (() => {});
+    this.#onTrackStarted = onTrackStarted ?? (() => {});
   }
 
   registerSocket() {
@@ -59,9 +53,20 @@ export class PlaybackRuntime {
       const sounds = playlist.sounds?.values?.() ?? playlist.sounds ?? [];
       for (const sound of sounds) {
         if (!sound.playing) continue;
+        this.#markTrackStarted(sound, {autoFollow: false});
         await this.#startPersistedPolicyFromNative(sound, null);
       }
     }
+  }
+
+  getActiveTrack() {
+    if (!this.#activeTrack) return null;
+    const resolved = resolveSound(this.#activeTrack.playlistId, this.#activeTrack.soundId);
+    if (!resolved) {
+      this.#activeTrack = null;
+      return null;
+    }
+    return resolved;
   }
 
   getSession(playlistId, soundId) {
@@ -91,25 +96,55 @@ export class PlaybackRuntime {
     if (!range.valid) throw new Error("Invalid playback range");
 
     const key = sessionKey(playlist.id, playlistSound.id);
-    const existing = this.getSession(playlist.id, playlistSound.id);
-    const resumePaused = Boolean(existing?.paused && samePolicy(existing, range, duration));
-    const offset = resumePaused
-      ? clamp(Number(existing.offset), range.start, range.end)
-      : range.start;
 
+    // Play is deliberately a NEW playback action. It always starts from the
+    // effective beginning (0 for Full Track, Start for Custom Range), even if
+    // this track currently has a paused session. Resume is a separate command.
     await this.#ensurePlaylistActive(playlist, playlistSound);
 
     const command = this.#policyCommand({
       type: SOCKET_TYPES.PLAY,
       revision: this.#nextRevision(key),
-      sessionId: resumePaused ? existing.sessionId : nowId(),
+      sessionId: nowId(),
       playlist,
       playlistSound,
       range,
       duration,
-      offset,
+      offset: range.start,
       paused: false
     });
+
+    await this.#acceptCommand(command);
+    game.socket.emit(SOCKET_CHANNEL, command);
+    // The EAP Play button already targets the selected track, so no UI jump is
+    // needed here; this only keeps the Playing indicator authoritative when a
+    // document was already playing and therefore emitted no new playing=true.
+    this.#markTrackStarted(playlistSound, {autoFollow: false});
+    return command;
+  }
+
+  async resumeFromGM(playlistId, soundId) {
+    const session = this.getSession(playlistId, soundId);
+    if (!session?.active || !session.paused) return null;
+
+    const key = sessionKey(playlistId, soundId);
+    const command = {
+      type: SOCKET_TYPES.PLAY,
+      revision: this.#nextRevision(key),
+      sessionId: session.sessionId,
+      playlistId,
+      soundId,
+      controllerUserId: game.user.id,
+      trackDuration: Number(session.trackDuration) || 0,
+      rangeStart: Number(session.rangeStart) || 0,
+      rangeEnd: Number(session.rangeEnd) || 0,
+      offset: clamp(Number(session.offset), Number(session.rangeStart) || 0, Number(session.rangeEnd) || 0),
+      loop: Boolean(session.loop),
+      fadeIn: Number(session.fadeIn) || 0,
+      fadeOut: Number(session.fadeOut) || 0,
+      paused: false,
+      resume: true
+    };
 
     await this.#acceptCommand(command);
     game.socket.emit(SOCKET_CHANNEL, command);
@@ -186,10 +221,48 @@ export class PlaybackRuntime {
   }
 
   async pauseFromGM(playlistId, soundId) {
-    const session = this.getSession(playlistId, soundId);
-    if (!session || session.paused) return null;
+    let session = this.getSession(playlistId, soundId);
+    if (session?.paused) return null;
 
     const key = sessionKey(playlistId, soundId);
+
+    // A Full Track started purely by Foundry may not have an Enhanced session.
+    // If the GM presses Pause after auto-follow, adopt that native playback into
+    // a paused EAP session so Resume can continue from the exact same position.
+    if (!session) {
+      const resolved = resolveSound(playlistId, soundId);
+      const playlistSound = resolved?.sound;
+      const nativeSound = playlistSound?.sound;
+      if (!playlistSound || (!playlistSound.playing && !nativeSound?.playing)) return null;
+
+      try { await playlistSound.load(); } catch (_error) { /* use loaded metadata if available */ }
+      const duration = Number(playlistSound.sound?.duration) || 0;
+      const range = effectiveRange(readPlaybackConfig(playlistSound), duration);
+      if (!range.valid) return null;
+
+      const offset = clamp(Number(playlistSound.sound?.currentTime) || 0, range.start, range.end);
+      const command = {
+        type: SOCKET_TYPES.PLAY,
+        revision: this.#nextRevision(key),
+        sessionId: nowId(),
+        playlistId,
+        soundId,
+        controllerUserId: game.user.id,
+        trackDuration: duration,
+        rangeStart: range.start,
+        rangeEnd: range.end,
+        offset,
+        loop: Boolean(range.loop),
+        fadeIn: Number(range.fadeIn) || 0,
+        fadeOut: Number(range.fadeOut) || 0,
+        paused: true,
+        adoptedNativePause: true
+      };
+      await this.#acceptCommand(command);
+      game.socket.emit(SOCKET_CHANNEL, command);
+      return command;
+    }
+
     const command = {
       type: SOCKET_TYPES.PAUSE,
       revision: this.#nextRevision(key),
@@ -235,6 +308,7 @@ export class PlaybackRuntime {
     const key = sessionKey(playlistId, playlistSound.id);
 
     if (changed.playing === false) {
+      this.#clearActiveTrack(playlistId, playlistSound.id);
       // Defer one turn and inspect current document state. This avoids a stale
       // native stop update killing a newer Enhanced PLAY that already won.
       queueMicrotask(() => {
@@ -252,6 +326,11 @@ export class PlaybackRuntime {
     }
 
     if (changed.playing !== true) return;
+
+    // A genuine native transition to playing=true is the auto-follow boundary.
+    // The GM remains free to select/edit another occurrence while this same
+    // track keeps playing; we only take selection again when a NEW track starts.
+    this.#markTrackStarted(playlistSound, {autoFollow: true});
 
     if (this.#sessions.has(key)) {
       this.#scheduleNativeReconcile(playlistId, playlistSound.id);
@@ -319,10 +398,27 @@ export class PlaybackRuntime {
     await this.#acceptCommand(command);
   }
 
+  #markTrackStarted(playlistSound, {autoFollow = true} = {}) {
+    const playlistId = playlistSound.parent?.id;
+    if (!playlistId) return;
+    const next = {playlistId, soundId: playlistSound.id};
+    const same = this.#activeTrack?.playlistId === next.playlistId && this.#activeTrack?.soundId === next.soundId;
+    this.#activeTrack = next;
+    if (!same) this.#onTrackStarted({...next, autoFollow: Boolean(autoFollow)});
+    else this.#onSessionChanged();
+  }
+
+  #clearActiveTrack(playlistId, soundId) {
+    if (this.#activeTrack?.playlistId !== playlistId || this.#activeTrack?.soundId !== soundId) return;
+    this.#activeTrack = null;
+    this.#onTrackStarted(null);
+  }
+
   async onPlaylistSoundDeleted(playlistSound) {
     const playlistId = playlistSound.parent?.id;
     if (!playlistId) return;
     const key = sessionKey(playlistId, playlistSound.id);
+    this.#clearActiveTrack(playlistId, playlistSound.id);
     const timer = this.#nativeReconcileTimers.get(key);
     if (timer) clearTimeout(timer);
     this.#nativeReconcileTimers.delete(key);

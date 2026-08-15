@@ -21,7 +21,10 @@ Hooks.once("ready", () => {
     console.log(`${MODULE_ID} | Foundry V${generation}${build ? ` build ${build}` : ""} compatibility layer active`);
   }
 
-  runtime = new PlaybackRuntime({onSessionChanged: () => uiController?.onSessionChanged()});
+  runtime = new PlaybackRuntime({
+    onSessionChanged: () => uiController?.onSessionChanged(),
+    onTrackStarted: track => uiController?.onTrackStarted(track)
+  });
   uiController = new EnhancedAudioPlayerUI({selection, runtime});
   runtime.registerSocket();
   void runtime.reconcileCurrentlyPlaying();

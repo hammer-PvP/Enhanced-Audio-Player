@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.1
+
+Active-track follow, Pause/Resume semantics, and compact-layout patch.
+
+- Added a distinct **Playing** track indicator alongside **Selected Track** so the GM can see which occurrence is sounding while editing another occurrence.
+- Added one-shot auto-follow when a new PlaylistSound starts. Native Next/sequential progression now selects the newly started occurrence and loads its saved per-occurrence configuration.
+- Auto-follow discards any uncommitted draft; only OK persists edits. After the automatic jump, the GM may freely select another track while the current track continues without repeated selection theft.
+- Changed **Play** semantics to always start a new playback from the effective beginning (0 for Full Track, Start for Custom Range), even if the track was paused.
+- Changed the middle transport control into a **Pause / Resume** toggle. Pause preserves the absolute position; Resume continues from that exact position.
+- Stop remains a full termination and returns the stopped playhead to 0 or Custom Start, so Play, Pause/Resume, and Stop now have distinct responsibilities.
+- Preserved v0.1.0 explicit-OK editing, per-PlaylistSound occurrence persistence, native playlist policy, absolute seek, range/loop behavior, and V13.341+/V14 compatibility.
+- Compacted the panel vertically by reducing outer padding, inter-row gaps, button/input heights, timeline spacing, and footer margins while keeping the existing width and two-column field layout.
+
 ## 0.1.0
 
 Explicit-commit editor and per-playlist playback-policy release.

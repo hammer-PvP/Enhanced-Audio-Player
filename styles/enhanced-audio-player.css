@@ -1,21 +1,22 @@
 .eap-panel {
   flex: 0 0 auto;
-  margin: 0.45rem;
-  padding: 0.55rem;
+  margin: 0.3rem 0.45rem;
+  padding: 0.36rem 0.5rem;
   border: 1px solid var(--color-border-light-2, rgba(255, 255, 255, 0.15));
   border-radius: 5px;
   background: var(--color-bg-option, rgba(0, 0, 0, 0.18));
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
   font-size: var(--font-size-12, 12px);
+  line-height: 1.15;
 }
 
 .eap-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 0.5rem;
-  padding-bottom: 0.4rem;
-  margin-bottom: 0.45rem;
+  gap: 0.4rem;
+  padding-bottom: 0.2rem;
+  margin-bottom: 0.24rem;
   border-bottom: 1px solid var(--color-border-light-2, rgba(255, 255, 255, 0.12));
   font-weight: 700;
 }
@@ -23,11 +24,11 @@
 .eap-header > span:first-child {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.28rem;
 }
 
 .eap-status {
-  font-size: 0.75em;
+  font-size: 0.72em;
   font-weight: 600;
   opacity: 0.7;
   white-space: nowrap;
@@ -41,62 +42,86 @@
 .eap-empty,
 .eap-error,
 .eap-warning {
-  padding: 0.45rem 0.2rem;
+  padding: 0.28rem 0.15rem;
   text-align: center;
 }
 
-.eap-empty {
-  opacity: 0.75;
-}
-
-.eap-error {
-  color: var(--color-level-error, #d05b5b);
-}
+.eap-empty { opacity: 0.75; }
+.eap-error { color: var(--color-level-error, #d05b5b); }
 
 .eap-warning {
-  margin-bottom: 0.4rem;
+  margin-bottom: 0.22rem;
   border: 1px solid var(--color-level-warning, #d6a84b);
   border-radius: 4px;
   color: var(--color-level-warning, #d6a84b);
-  font-size: 0.9em;
+  font-size: 0.86em;
 }
 
-.eap-track-block {
-  margin-bottom: 0.5rem;
+/* Selected and currently-playing tracks share two compact rows. */
+.eap-track-summary {
+  display: grid;
+  gap: 0.08rem;
+  margin-bottom: 0.28rem;
   min-width: 0;
 }
 
-.eap-track-label,
-.eap-playlist-name {
-  opacity: 0.62;
-  font-size: 0.85em;
+.eap-track-row {
+  display: grid;
+  grid-template-columns: 4.4rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0.3rem;
+  min-width: 0;
 }
 
-.eap-track-name {
+.eap-track-label {
+  opacity: 0.62;
+  font-size: 0.78em;
+  white-space: nowrap;
+}
+
+.eap-track-value {
+  display: block;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.eap-track-name {
   font-weight: 700;
+}
+
+.eap-track-none {
+  opacity: 0.55;
+  font-weight: 500;
+}
+
+.eap-playlist-name {
+  opacity: 0.58;
+  font-size: 0.8em;
 }
 
 .eap-transport {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.3rem;
-  margin-bottom: 0.5rem;
+  gap: 0.25rem;
+  margin-bottom: 0.24rem;
 }
 
 .eap-transport button {
   min-width: 0;
-  min-height: 28px;
-  padding-inline: 0.3rem;
+  min-height: 24px;
+  height: 25px;
+  padding: 0 0.28rem;
+  line-height: 1;
 }
 
 .eap-toggle {
   display: flex;
   align-items: center;
-  gap: 0.45rem;
-  margin: 0.35rem 0;
+  gap: 0.35rem;
+  margin: 0.14rem 0;
+  min-height: 20px;
 }
 
 .eap-toggle input[type="checkbox"] {
@@ -104,71 +129,93 @@
 }
 
 .eap-full-track {
-  padding-bottom: 0.35rem;
+  padding-bottom: 0.14rem;
   border-bottom: 1px solid var(--color-border-light-2, rgba(255, 255, 255, 0.1));
 }
 
 .eap-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 0.45rem;
-  margin: 0.4rem 0;
+  gap: 0.34rem;
+  margin: 0.2rem 0;
 }
 
-.eap-grid > label {
-  min-width: 0;
-}
+.eap-grid > label { min-width: 0; }
 
 .eap-grid > label > span {
   display: block;
-  margin-bottom: 0.15rem;
+  margin-bottom: 0.06rem;
   opacity: 0.8;
+  line-height: 1.05;
 }
 
 .eap-number {
   display: flex;
   align-items: center;
-  gap: 0.2rem;
+  gap: 0.18rem;
 }
 
 .eap-number input {
   width: 100%;
   min-width: 0;
+  height: 25px;
+  min-height: 24px;
+  padding-block: 0;
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
-.eap-number > span {
-  opacity: 0.6;
+.eap-number > span { opacity: 0.6; }
+
+.eap-apply-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  margin: 0.2rem 0 0.08rem;
+  padding-top: 0.18rem;
+  border-top: 1px solid var(--color-border-light-2, rgba(255, 255, 255, 0.1));
 }
 
-.eap-progress-wrap {
-  margin-top: 0.55rem;
+.eap-dirty-hint {
+  min-width: 0;
+  opacity: 0.7;
+  font-size: 0.78em;
 }
+
+.eap-apply {
+  flex: 0 0 auto;
+  min-width: 56px;
+  min-height: 24px;
+  height: 25px;
+  padding-block: 0;
+  font-weight: 700;
+}
+
+.eap-progress-wrap { margin-top: 0.24rem; }
 
 .eap-progress-labels,
 .eap-marker-labels {
   display: flex;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 0.4rem;
   font-variant-numeric: tabular-nums;
-  font-size: 0.82em;
+  font-size: 0.76em;
 }
 
 .eap-progress-labels {
-  margin-bottom: 0.1rem;
+  margin-bottom: 0;
   opacity: 0.78;
 }
 
-.eap-progress-caption {
-  opacity: 0.65;
-}
+.eap-progress-caption { opacity: 0.65; }
 
 .eap-timeline {
   --eap-start-pct: 0%;
   --eap-end-pct: 100%;
   --eap-range-width: 100%;
   position: relative;
-  min-height: 26px;
+  min-height: 20px;
   display: flex;
   align-items: center;
 }
@@ -186,7 +233,7 @@
   left: var(--eap-start-pct);
   width: var(--eap-range-width);
   top: 50%;
-  height: 6px;
+  height: 5px;
   transform: translateY(-50%);
   border-radius: 999px;
   background: color-mix(in srgb, var(--color-warm-2, #c9a227) 42%, transparent);
@@ -196,8 +243,8 @@
 .eap-range-marker {
   position: absolute;
   z-index: 4;
-  top: 3px;
-  bottom: 3px;
+  top: 2px;
+  bottom: 2px;
   width: 2px;
   border-radius: 1px;
   background: var(--color-warm-2, #c9a227);
@@ -205,13 +252,8 @@
   pointer-events: none;
 }
 
-.eap-range-marker-start {
-  left: var(--eap-start-pct);
-}
-
-.eap-range-marker-end {
-  left: var(--eap-end-pct);
-}
+.eap-range-marker-start { left: var(--eap-start-pct); }
+.eap-range-marker-end { left: var(--eap-end-pct); }
 
 .eap-timeline[data-full-track] .eap-range-highlight,
 .eap-timeline[data-full-track] .eap-range-marker,
@@ -220,27 +262,26 @@
 }
 
 .eap-marker-labels {
-  margin-top: 0.05rem;
-  opacity: 0.72;
+  margin-top: 0;
+  opacity: 0.7;
 }
 
-.eap-marker-labels span:last-child {
-  text-align: right;
-}
+.eap-marker-labels span:last-child { text-align: right; }
 
 .eap-footer-actions {
   display: flex;
   justify-content: flex-end;
-  margin-top: 0.5rem;
-  padding-top: 0.45rem;
+  margin-top: 0.22rem;
+  padding-top: 0.2rem;
   border-top: 1px solid var(--color-border-light-2, rgba(255, 255, 255, 0.1));
 }
 
 .eap-reset {
   width: auto;
-  min-height: 26px;
-  padding-inline: 0.55rem;
-  font-size: 0.9em;
+  min-height: 23px;
+  height: 24px;
+  padding: 0 0.45rem;
+  font-size: 0.86em;
 }
 
 .eap-selected-track {
@@ -254,36 +295,8 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-level-error, #d05b5b) 45%, transparent);
 }
 
-.eap-timeline input[type="range"]:not(:disabled) {
-  cursor: pointer;
-}
-
-.eap-timeline:not([data-full-track]) .eap-range-highlight {
-  opacity: 0.62;
-}
-
-.eap-apply-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  margin: 0.45rem 0 0.2rem;
-  padding-top: 0.4rem;
-  border-top: 1px solid var(--color-border-light-2, rgba(255, 255, 255, 0.1));
-}
-
-.eap-dirty-hint {
-  min-width: 0;
-  opacity: 0.72;
-  font-size: 0.84em;
-}
-
-.eap-apply {
-  flex: 0 0 auto;
-  min-width: 62px;
-  min-height: 28px;
-  font-weight: 700;
-}
+.eap-timeline input[type="range"]:not(:disabled) { cursor: pointer; }
+.eap-timeline:not([data-full-track]) .eap-range-highlight { opacity: 0.62; }
 
 .eap-panel[data-eap-dirty] .eap-apply:not(:disabled) {
   outline: 1px solid var(--color-border-highlight, var(--color-warm-2, #c9a227));

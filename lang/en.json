@@ -3,7 +3,7 @@
   "EAP.SelectTrack": "Select a sound inside an expanded playlist.",
   "EAP.Loading": "Loading audio metadata...",
   "EAP.LoadError": "The selected audio could not be loaded.",
-  "EAP.SelectedTrack": "Selected Track",
+  "EAP.SelectedTrack": "Selected",
   "EAP.Play": "Play",
   "EAP.Pause": "Pause",
   "EAP.Stop": "Stop",
@@ -31,5 +31,9 @@
   "EAP.OK": "OK",
   "EAP.UnsavedChanges": "Unsaved changes — click OK to apply.",
   "EAP.Notifications.SettingsSaved": "Enhanced Audio Player: track settings saved.",
-  "EAP.Notifications.SettingsSaveFailed": "Enhanced Audio Player could not save this track configuration."
+  "EAP.Notifications.SettingsSaveFailed": "Enhanced Audio Player could not save this track configuration.",
+  "EAP.PlayingTrack": "Playing",
+  "EAP.Resume": "Resume",
+  "EAP.NoTrackPlaying": "None",
+  "EAP.Notifications.PauseResumeFailed": "Enhanced Audio Player could not pause or resume playback."
 }

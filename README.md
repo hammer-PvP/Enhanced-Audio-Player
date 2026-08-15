@@ -2,39 +2,50 @@
 
 Enhanced Audio Player is a system-agnostic Foundry VTT module that adds a compact GM-only playback-control layer below the native Playlist Directory. It does not replace Foundry playlists, PlaylistSound documents, Sound objects, or the audio engine.
 
-## v0.1.0 scope
+## v0.1.1 scope
 
 - Click a sound row inside an expanded native Playlist to select that exact PlaylistSound occurrence without starting playback.
-- Native playlist management remains Foundry-owned.
+- The panel distinguishes **Selected Track** (the occurrence being viewed/edited) from **Playing** (the most recently started active occurrence).
+- When a new PlaylistSound actually starts — including native Next/sequential progression — the player automatically follows and selects that new occurrence, discarding any uncommitted draft on the previously selected occurrence.
+- After that automatic jump, the GM remains free to click another sound and edit it while the active track continues. Selection is not stolen again until another track genuinely starts.
+- Native playlist management and ordering remain Foundry-owned.
 - Every unconfigured PlaylistSound defaults to **Full Track**.
-- Disable Full Track to configure a custom Start and End range.
-- Optional **Loop Range** repeats only the configured custom range.
+- Disable Full Track to configure a custom Start and End range. Optional **Loop Range** repeats only that configured range.
 - Fade In and Fade Out remain available per PlaylistSound occurrence.
-- Enhanced **Play**, **Pause**, **Stop**, full-duration timeline, bounded seek, and absolute seeking retain the stable v0.0.4 transport behavior.
-- Configuration editing now uses a local draft and a single explicit **OK** button. Typing never writes flags, never rerenders the PlaylistSound, and never commits because of Enter, blur, debounce, or numpad behavior.
-- Numpad keys remain isolated from Foundry/browser shortcuts while a numeric EAP field has focus. Numpad Enter is consumed but does not blur or commit the field.
-- **OK** validates and atomically saves Full Track, Start, End, Loop Range, Fade In, and Fade Out as one playback policy.
-- **Reset Track** stops the selected occurrence, removes only its EAP playback flag, and returns only that occurrence to implicit Full Track defaults.
-- Playback policy is scoped to the exact `Playlist + PlaylistSound` occurrence, never to the audio file path. The same source file can therefore have completely different ranges/loop/fades in Root, Playlist A, Playlist B, and so on.
-- A saved policy is now honored whenever that PlaylistSound starts through Foundry's native playlist flow, not only when the Enhanced Play button is used.
-- For a saved custom range with Loop Range off, reaching End concludes that occurrence and Foundry's public `Playlist.playNext` is used when the parent playlist supports sequential/shuffled progression; other playlist modes simply stop the occurrence.
-- With Loop Range on, the saved Start → End region continues looping until the track is stopped or changed.
-- Configuration remains stored in `flags.enhanced-audio-player.playback` on each PlaylistSound.
-- Foundry V13 Stable 13.341+ and V14 share one runtime with the compatibility adapter introduced in v0.0.4.
+- Configuration editing uses a local draft and a single explicit **OK** button. Typing does not write flags or rerender the PlaylistSound.
+- **Play** always starts a new playback from the effective beginning: 0 for Full Track, Start for Custom Range.
+- The middle transport button is **Pause / Resume**: Pause preserves the exact current position; Resume continues from that position.
+- **Stop** terminates playback and returns the stopped position to 0 (Full Track) or Start (Custom Range).
+- Full-duration timeline, bounded seek, absolute seeking, Reset Track, command serialization, and per-occurrence persistence retain the stable v0.1.0 behavior.
+- Playback policy remains scoped to the exact `Playlist ID + PlaylistSound ID`, never to the audio file path. Duplicate uses of the same file can behave differently in Root, Playlist A, Playlist B, and so on.
+- A saved policy is honored whenever that PlaylistSound starts through Foundry's native playlist flow, not only through Enhanced Play.
+- The UI is vertically compacted by reducing padding, gaps, row heights, and control heights while preserving the existing width and two-column Start/End and Fade layouts.
+- Foundry V13 Stable 13.341+ and V14 continue sharing one runtime and compatibility adapter.
 
 ## Playback rules
 
 | Saved mode | Seek bounds | Playback behavior |
 | --- | --- | --- |
-| Full Track | 0 → source duration | Plays the complete source. Stored custom Start/End/Loop are ignored but preserved. |
-| Custom Range + Loop Off | Start → End | Plays Start → End once, then allows the parent sequential/shuffled playlist to advance normally. |
-| Custom Range + Loop On | Start → End | Repeats Start → End until stopped or another track takes over. |
+| Full Track | 0 → source duration | Play starts at 0 and plays the complete source. |
+| Custom Range + Loop Off | Start → End | Play starts at Start, ends at End once, then allows the parent sequential/shuffled playlist to advance normally. |
+| Custom Range + Loop On | Start → End | Play starts at Start and repeats Start → End until stopped or another track takes over. |
 
 The timeline itself always spans 0 → source duration. Custom Range changes only the allowed seek area and playback policy, not the visual time scale.
 
+## Selected vs Playing
+
+The player intentionally separates editor focus from playback focus:
+
+- **Selected Track** is the occurrence whose saved configuration/draft is shown in the editor.
+- **Playing** is the occurrence most recently started by Foundry/EAP.
+- A new playback start automatically selects that occurrence once.
+- The GM may then select a different occurrence for configuration while the active one keeps playing.
+- If another track starts later (for example via `Playlist.playNext`), the player auto-follows again.
+- Auto-follow never saves an uncommitted draft. Only **OK** persists configuration.
+
 ## Explicit OK editing
 
-Editing is intentionally transactional in v0.1.0:
+Editing is transactional:
 
 1. Select the exact PlaylistSound occurrence you want to configure.
 2. Edit Full Track, Start, End, Loop Range, Fade In, or Fade Out locally.
@@ -42,7 +53,7 @@ Editing is intentionally transactional in v0.1.0:
 4. Click **OK** to validate and save the entire configuration in one document update.
 5. If that occurrence is already playing, the committed policy is reconciled immediately.
 
-While unsaved changes exist, Play and timeline seek are disabled so the transport can never disagree with the saved policy. Pause and Stop remain available for a currently active session.
+While unsaved changes exist, Play and timeline seek are disabled so the transport cannot disagree with the saved policy. Pause/Resume and Stop remain available for a currently selected active session.
 
 ## Per-playlist / per-occurrence persistence
 
@@ -50,33 +61,25 @@ Playback policy belongs to the PlaylistSound embedded inside its parent Playlist
 
 `Playlist ID + PlaylistSound ID -> flags.enhanced-audio-player.playback`
 
-It is **not** keyed by `sound.path` or file name.
-
-Example using the same physical audio source:
-
-- Root occurrence: Full Track
-- Playlist A occurrence: 100s → 120s, Loop On
-- Playlist B occurrence: 15s → 28s, Loop Off
-- Playlist C occurrence: 182s → 195s, Loop Off
-
-Resetting the occurrence in Playlist A does not change Root, Playlist B, or Playlist C.
+It is **not** keyed by `sound.path` or file name. Resetting one occurrence does not change any other occurrence that happens to use the same physical audio source.
 
 ## Native playlist playback policy
 
-A configured occurrence keeps its policy when Foundry itself starts the sound, including when a sequential/shuffled playlist advances to it. The module listens to the native PlaylistSound playing state, loads that exact occurrence's flags, and applies the range/fade policy through its native `PlaylistSound.sound` object.
+A configured occurrence keeps its policy when Foundry itself starts the sound, including sequential/shuffled playlist progression. The module listens to the native PlaylistSound playing state, loads that exact occurrence's flags, and applies the policy through its native `PlaylistSound.sound` object.
 
-Enhanced Audio Player does not create its own playlist order. For non-looping custom ranges it delegates next-track progression to Foundry's public `Playlist.playNext(soundId)` API when that operation is applicable.
+Enhanced Audio Player does not create its own playlist order. For non-looping custom ranges it delegates next-track progression to Foundry's public Playlist progression behavior.
 
-## Pause, Stop, and Reset
+## Transport semantics
 
-- **Pause** stores the current Enhanced position and pauses the native Sound.
-- **Play** after an unchanged Pause resumes from that position.
-- **Stop** terminates the Enhanced session. A stopped Full Track returns to 0; a stopped Custom Range returns to Start.
-- **Reset Track** is a transport barrier: it invalidates old transport work, stops the selected occurrence, removes only `flags.enhanced-audio-player.playback` from that PlaylistSound, and restores implicit Full Track behavior.
+- **Play** = new playback from the effective beginning. It does not resume a paused position.
+- **Pause** = freeze the current Enhanced position while keeping the session resumable.
+- **Resume** = continue that paused session from its stored absolute position.
+- **Stop** = end the session. The next Play starts from the beginning again.
+- **Reset Track** = transport barrier + removal of only that PlaylistSound occurrence's EAP playback flag.
 
 ## Persistence
 
-Persisted values are Full Track, Start, End, Loop Range, Fade In, and Fade Out. Selection, current progress, pause position, editor draft, dirty state, and UI state are runtime-only.
+Persisted values are Full Track, Start, End, Loop Range, Fade In, and Fade Out. Selection, active/playing indicator, current progress, pause position, editor draft, dirty state, and UI state are runtime-only.
 
 ## Design contract
 
