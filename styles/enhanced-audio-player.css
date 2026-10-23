@@ -301,3 +301,28 @@
 .eap-panel[data-eap-dirty] .eap-apply:not(:disabled) {
   outline: 1px solid var(--color-border-highlight, var(--color-warm-2, #c9a227));
 }
+
+/* v0.1.3: compact playback policy selector; no transport geometry changes. */
+.eap-mode-field { display: grid; gap: 0.13rem; margin: 0.16rem 0 0.22rem; }
+.eap-mode-field > label { opacity: 0.82; font-size: 0.9em; }
+.eap-mode-field select {
+  width: 100%;
+  height: 27px;
+  min-height: 25px;
+  padding: 0.1rem 0.38rem;
+  border: 1px solid var(--color-border-light-2, rgba(255,255,255,0.15));
+  border-radius: 4px;
+  background: var(--color-bg-option, rgba(0,0,0,0.28));
+  color: var(--color-text-primary, inherit);
+}
+.eap-grid[hidden] { display: none !important; }
+.eap-mode-description {
+  display: grid;
+  gap: 0.07rem;
+  margin: 0.09rem 0 0.22rem;
+  font-size: 0.79em;
+  opacity: 0.79;
+  font-variant-numeric: tabular-nums;
+}
+.eap-mode-description > span[hidden] { display: none; }
+.eap-mode-description[data-mode="intro"] { opacity: 0.96; }

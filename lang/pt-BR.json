@@ -35,5 +35,16 @@
   "EAP.PlayingTrack": "Tocando",
   "EAP.Resume": "Retomar",
   "EAP.NoTrackPlaying": "Nenhuma",
-  "EAP.Notifications.PauseResumeFailed": "Enhanced Audio Player não conseguiu pausar ou retomar a reprodução."
+  "EAP.Notifications.PauseResumeFailed": "Enhanced Audio Player não conseguiu pausar ou retomar a reprodução.",
+  "EAP.PlaybackMode": "Modo de Reprodução",
+  "EAP.Mode.full": "Faixa Completa",
+  "EAP.Mode.range": "Tocar Trecho Uma Vez",
+  "EAP.Mode.loop": "Repetir Trecho",
+  "EAP.Mode.intro": "Intro + Loop",
+  "EAP.LoopStart": "Início do Loop",
+  "EAP.LoopEnd": "Fim do Loop",
+  "EAP.IntroOnce": "Introdução (uma vez)",
+  "EAP.LoopRepeat": "Loop (repetir)",
+  "EAP.RangeOnce": "Trecho (uma vez)",
+  "EAP.FullOnce": "Faixa completa (uma vez)"
 }

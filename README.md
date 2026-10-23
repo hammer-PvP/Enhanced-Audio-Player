@@ -2,7 +2,21 @@
 
 Enhanced Audio Player is a system-agnostic Foundry VTT module that adds a compact GM-only playback-control layer below the native Playlist Directory. It does not replace Foundry playlists, PlaylistSound documents, Sound objects, or the audio engine.
 
-## v0.1.2 scope
+
+### Playback mode (v0.1.3)
+
+Choose the playback policy in the compact **Playback Mode** dropdown and press **OK** to save it on that particular PlaylistSound occurrence:
+
+| Mode | Playback behavior |
+| --- | --- |
+| Full Track | Play 0 → whole source once. |
+| Play Range Once | Play Start → End once, then let the native playlist advance when applicable. |
+| Loop Range | Repeat Start → End until stopped. |
+| Intro + Loop | Play 0 → Loop End once, then repeat Loop Start → Loop End. The intro 0 → Loop Start does not repeat. |
+
+The **Loop Start** and **Loop End** labels appear in Intro + Loop mode. This is only a clearer interface for the existing `fullTrack`/`loop` flags, and no migration is necessary. If playback is **paused**, dragging the timeline only adjusts the held absolute position. Click **Resume** to continue from that position without starting audio during the drag.
+
+## Core functionality
 
 - Click a sound row inside an expanded native Playlist to select that exact PlaylistSound occurrence without starting playback.
 - The panel distinguishes **Selected Track** (the occurrence being viewed/edited) from **Playing** (the most recently started active occurrence).
@@ -10,7 +24,7 @@ Enhanced Audio Player is a system-agnostic Foundry VTT module that adds a compac
 - After that automatic jump, the GM remains free to click another sound and edit it while the active track continues. Selection is not stolen again until another track genuinely starts.
 - Native playlist management and ordering remain Foundry-owned.
 - Every unconfigured PlaylistSound defaults to **Full Track**.
-- Configure a precise Start and End section for a custom range, or combine **Full Track + Loop Range** to play the intro once (0 → End) and then repeat Start → End indefinitely.
+- Choose **Playback Mode** to play the whole track, play a range once, loop a range, or play **Intro + Loop** (from 0 through Loop End once, followed by Loop Start → Loop End repeats).
 - Fade In and Fade Out remain available per PlaylistSound occurrence.
 - Configuration editing uses a local draft and a single explicit **OK** button. Typing does not write flags or rerender the PlaylistSound.
 - **Play** always starts a new playback from the effective beginning: 0 for Full Track or Intro + Loop, Start for Custom Range.
@@ -26,10 +40,10 @@ Enhanced Audio Player is a system-agnostic Foundry VTT module that adds a compac
 
 | Saved mode | Seek bounds | Playback behavior |
 | --- | --- | --- |
-| Full Track (Loop Off) | 0 → source duration | Play starts at 0 and plays the complete source. |
-| Full Track + Loop Range | 0 → End | Plays intro 0 → End once, then repeats Start → End (no outro). |
-| Custom Range + Loop Off | Start → End | Play starts at Start, ends at End once, then allows the parent sequential/shuffled playlist to advance normally. |
-| Custom Range + Loop On | Start → End | Play starts at Start and repeats Start → End until stopped or another track takes over. |
+| Full Track | 0 → source duration | Play starts at 0 and plays the complete source. |
+| Intro + Loop | 0 → End | Plays intro 0 → End once, then repeats Start → End (no outro). |
+| Play Range Once | Start → End | Play starts at Start, ends at End once, then allows the parent sequential/shuffled playlist to advance normally. |
+| Loop Range | Start → End | Play starts at Start and repeats Start → End until stopped or another track takes over. |
 
 The timeline itself always spans 0 → source duration. Custom Range allows seeking only Start → End; Intro + Loop allows 0 → End; Full Track without looping permits 0 → source duration. The scale is always the complete source.
 
@@ -49,7 +63,7 @@ The player intentionally separates editor focus from playback focus:
 Editing is transactional:
 
 1. Select the exact PlaylistSound occurrence you want to configure.
-2. Edit Full Track, Start, End, Loop Range, Fade In, or Fade Out locally.
+2. Choose a Playback Mode and edit Start/End (or Loop Start/Loop End for Intro + Loop), Fade In, or Fade Out locally.
 3. The timeline markers may preview the draft, but the persisted playback policy remains unchanged while the editor is dirty.
 4. Click **OK** to validate and save the entire configuration in one document update.
 5. If that occurrence is already playing, the committed policy is reconciled immediately.

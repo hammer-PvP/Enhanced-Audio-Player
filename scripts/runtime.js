@@ -161,7 +161,8 @@ export class PlaybackRuntime {
   /**
    * Seek is an absolute transport action inside the currently allowed policy.
    * If no Enhanced session exists, releasing the timeline starts one at offset.
-   * Seeking from Pause resumes playback, matching the UI contract.
+   * Seeking while paused ONLY updates the stored absolute pause position;
+   * it must not start audio. Resume is the sole action that unpauses.
    */
   async seekFromGM(playlist, playlistSound, config, duration, requestedOffset) {
     const range = effectiveRange(config, duration);
@@ -171,7 +172,11 @@ export class PlaybackRuntime {
     const existing = this.getSession(playlist.id, playlistSound.id);
     const offset = clamp(Number(requestedOffset), range.seekMin, range.seekMax);
 
-    await this.#ensurePlaylistActive(playlist, playlistSound);
+    // Do not restart a paused track when moving the timeline. The playlist
+    // document remains playing=true while the local native Sound is stopped;
+    // all clients receive the revised paused offset via the existing socket.
+    const seekingWhilePaused = Boolean(existing?.active && existing.paused);
+    if (!seekingWhilePaused) await this.#ensurePlaylistActive(playlist, playlistSound);
 
     const command = this.#policyCommand({
       type: SOCKET_TYPES.SEEK,
@@ -182,7 +187,7 @@ export class PlaybackRuntime {
       range,
       duration,
       offset,
-      paused: false
+      paused: seekingWhilePaused
     });
 
     await this.#acceptCommand(command);

@@ -13,6 +13,18 @@ const SELECTED_CLASS = "eap-selected-track";
 const INTERACTIVE_SELECTOR = "button, input, select, textarea, [data-action], [role='button'], .control, .controls, .sound-control, .volume";
 const NUMERIC_KEYS = new Set(["start", "end", "fadeIn", "fadeOut"]);
 const STRUCTURAL_KEYS = new Set(["start", "end"]);
+const PLAYBACK_MODES = Object.freeze(["full", "range", "loop", "intro"]);
+
+/** Keep the v0.1.2 flags schema: a mode is only a clearer editor projection. */
+export function playbackMode(config) {
+  if (config.fullTrack !== false) return config.loop ? "intro" : "full";
+  return config.loop ? "loop" : "range";
+}
+
+export function policyForMode(mode) {
+  if (!PLAYBACK_MODES.includes(mode)) return null;
+  return {fullTrack: mode === "full" || mode === "intro", loop: mode === "loop" || mode === "intro"};
+}
 
 /**
  * Playlist-directory UI for the Enhanced Audio Player.
@@ -357,22 +369,24 @@ export class EnhancedAudioPlayerUI {
       }
     });
 
+    // Playback mode is a UI-only projection of the *existing* fullTrack/loop
+    // flags. Selecting a mode updates the local draft, never saves by itself.
+    panel.querySelector("[data-eap-mode]")?.addEventListener("change", () => {
+      this.#updateDirtyState();
+      this.#syncDraftVisuals(duration);
+    });
+
     for (const input of panel.querySelectorAll("[data-eap-config]")) {
       const key = input.dataset.eapConfig;
-      if (!key) continue;
-      if (NUMERIC_KEYS.has(key)) this.#isolateNumericInput(input);
-
+      if (!NUMERIC_KEYS.has(key)) continue;
+      this.#isolateNumericInput(input);
       const updateDraft = () => {
-        if (input.type !== "checkbox") this.#markInputValidity(input);
+        this.#markInputValidity(input);
         this.#updateDirtyState();
         this.#syncDraftVisuals(duration);
       };
-
-      if (input.type === "checkbox") input.addEventListener("change", updateDraft);
-      else {
-        input.addEventListener("input", updateDraft);
-        input.addEventListener("change", updateDraft);
-      }
+      input.addEventListener("input", updateDraft);
+      input.addEventListener("change", updateDraft);
     }
 
     const progress = panel.querySelector("[data-eap-progress]");
@@ -509,23 +523,19 @@ export class EnhancedAudioPlayerUI {
     const panel = this.#panel;
     if (!panel) return null;
 
-    const config = {};
+    const policy = policyForMode(panel.querySelector("[data-eap-mode]")?.value);
+    if (!policy) return null;
+    const config = {...policy};
     let validText = true;
-    const fullTrackInput = panel.querySelector("[data-eap-config='fullTrack']");
-    const fullTrack = Boolean(fullTrackInput?.checked);
-    const introLoop = fullTrack && Boolean(panel.querySelector("[data-eap-config='loop']")?.checked);
+    const fullOnly = policy.fullTrack && !policy.loop;
 
     for (const input of panel.querySelectorAll("[data-eap-config]")) {
       const key = input.dataset.eapConfig;
-      if (!key) continue;
-      if (input.type === "checkbox") {
-        config[key] = input.checked;
-        continue;
-      }
+      if (!NUMERIC_KEYS.has(key)) continue;
 
       const parsed = parseDecimal(input.value);
       const valid = Number.isFinite(parsed) && parsed >= 0;
-      const ignoredInvalidRangeField = fullTrack && !introLoop && (key === "start" || key === "end");
+      const ignoredInvalidRangeField = fullOnly && (key === "start" || key === "end");
       input.classList.toggle("eap-input-invalid", !valid && !ignoredInvalidRangeField);
       if (!valid) {
         if (ignoredInvalidRangeField || allowInvalidText) {
@@ -541,9 +551,8 @@ export class EnhancedAudioPlayerUI {
 
   #markInputValidity(input) {
     const key = input.dataset.eapConfig;
-    const fullTrack = this.#panel?.querySelector("[data-eap-config='fullTrack']")?.checked;
-    const loop = this.#panel?.querySelector("[data-eap-config='loop']")?.checked;
-    if (fullTrack && !loop && (key === "start" || key === "end")) {
+    const fullOnly = this.#panel?.querySelector("[data-eap-mode]")?.value === "full";
+    if (fullOnly && (key === "start" || key === "end")) {
       input.classList.remove("eap-input-invalid");
       return;
     }
@@ -558,14 +567,19 @@ export class EnhancedAudioPlayerUI {
     const draft = this.#readPanelConfig({allowInvalidText: true}) ?? this.#lastCommittedConfig;
     const committed = this.#lastCommittedConfig;
     if (!draft || !committed) return;
-    const fullTrack = draft.fullTrack !== false;
-
-    const fullOnly = fullTrack && !draft.loop;
+    const mode = playbackMode(draft);
+    const fullOnly = mode === "full";
+    const rangeInputs = panel.querySelector("[data-eap-range-fields]");
+    if (rangeInputs) rangeInputs.hidden = fullOnly;
     for (const key of ["start", "end"]) {
       const input = panel.querySelector(`[data-eap-config='${key}']`);
       if (input) input.disabled = fullOnly;
     }
-    // Loop Range is available alongside Full Track (Intro + Loop).
+    const startTitle = panel.querySelector("[data-eap-start-title]");
+    const endTitle = panel.querySelector("[data-eap-end-title]");
+    if (startTitle) startTitle.textContent = localize(mode === "intro" ? "EAP.LoopStart" : "EAP.Start");
+    if (endTitle) endTitle.textContent = localize(mode === "intro" ? "EAP.LoopEnd" : "EAP.End");
+    this.#updateModeDescription(mode, draft, duration);
     const timeline = panel.querySelector("[data-eap-timeline]");
     timeline?.toggleAttribute("data-full-track", fullOnly);
     this.#updateTimelineMarkers(duration, draft);
@@ -593,6 +607,32 @@ export class EnhancedAudioPlayerUI {
     if (progress) progress.disabled = !committedValid || this.#dirty || this.#transportBusy;
 
     if (!this.#isSeeking && !this.#dirty) this.#enforceDisplayedPosition(committed, duration);
+  }
+
+  #updateModeDescription(mode, draft, duration) {
+    const description = this.#panel?.querySelector("[data-eap-mode-description]");
+    if (!description) return;
+    const start = parseDecimal(this.#panel?.querySelector("[data-eap-config='start']")?.value);
+    const end = parseDecimal(this.#panel?.querySelector("[data-eap-config='end']")?.value);
+    const safeStart = Number.isFinite(start) ? start : 0;
+    const safeEnd = Number.isFinite(end) ? end : 0;
+    const first = description.querySelector("[data-eap-mode-primary]");
+    const second = description.querySelector("[data-eap-mode-secondary]");
+    description.dataset.mode = mode;
+    if (mode === "intro") {
+      if (first) first.textContent = `${localize("EAP.IntroOnce")}: ${formatTime(0)} → ${formatTime(safeStart)}`;
+      if (second) second.textContent = `${localize("EAP.LoopRepeat")}: ${formatTime(safeStart)} → ${formatTime(safeEnd)} ↺`;
+    } else if (mode === "loop") {
+      if (first) first.textContent = `${localize("EAP.LoopRepeat")}: ${formatTime(safeStart)} → ${formatTime(safeEnd)} ↺`;
+      if (second) second.textContent = "";
+    } else if (mode === "range") {
+      if (first) first.textContent = `${localize("EAP.RangeOnce")}: ${formatTime(safeStart)} → ${formatTime(safeEnd)}`;
+      if (second) second.textContent = "";
+    } else {
+      if (first) first.textContent = `${localize("EAP.FullOnce")}: ${formatTime(0)} → ${formatTime(duration)}`;
+      if (second) second.textContent = "";
+    }
+    if (second) second.hidden = !second.textContent;
   }
 
   #updateDirtyStateWithoutRecursion(draft) {
@@ -650,8 +690,9 @@ export class EnhancedAudioPlayerUI {
 
     const startLabel = panel.querySelector("[data-eap-marker-start-label]");
     const endLabel = panel.querySelector("[data-eap-marker-end-label]");
-    if (startLabel) startLabel.textContent = `${localize("EAP.Start")} ${formatTime(start)}`;
-    if (endLabel) endLabel.textContent = `${localize("EAP.End")} ${formatTime(end)}`;
+    const isIntro = playbackMode(config) === "intro";
+    if (startLabel) startLabel.textContent = `${localize(isIntro ? "EAP.LoopStart" : "EAP.Start")} ${formatTime(start)}`;
+    if (endLabel) endLabel.textContent = `${localize(isIntro ? "EAP.LoopEnd" : "EAP.End")} ${formatTime(end)}`;
   }
 
   #getDisplayedPosition(playlist, sound, config, duration) {
@@ -829,26 +870,28 @@ export class EnhancedAudioPlayerUI {
         </button>
       </div>
 
-      <label class="eap-toggle eap-full-track">
-        <input type="checkbox" data-eap-config="fullTrack" ${config.fullTrack ? "checked" : ""}>
-        <span>${escapeHtml(localize("EAP.FullTrack"))}</span>
-      </label>
+      <div class="eap-mode-field">
+        <label for="eap-playback-mode">${escapeHtml(localize("EAP.PlaybackMode"))}</label>
+        <select id="eap-playback-mode" data-eap-mode>
+          ${PLAYBACK_MODES.map(mode => `<option value="${mode}" ${playbackMode(config) === mode ? "selected" : ""}>${escapeHtml(localize(`EAP.Mode.${mode}`))}</option>`).join("")}
+        </select>
+      </div>
 
-      <div class="eap-grid">
+      <div class="eap-grid" data-eap-range-fields ${playbackMode(config) === "full" ? "hidden" : ""}>
         <label>
-          <span>${escapeHtml(localize("EAP.Start"))}</span>
+          <span data-eap-start-title>${escapeHtml(localize(playbackMode(config) === "intro" ? "EAP.LoopStart" : "EAP.Start"))}</span>
           <div class="eap-number"><input type="text" inputmode="decimal" autocomplete="off" value="${numberValue(config.start)}" data-eap-config="start"><span>s</span></div>
         </label>
         <label>
-          <span>${escapeHtml(localize("EAP.End"))}</span>
+          <span data-eap-end-title>${escapeHtml(localize(playbackMode(config) === "intro" ? "EAP.LoopEnd" : "EAP.End"))}</span>
           <div class="eap-number"><input type="text" inputmode="decimal" autocomplete="off" value="${numberValue(endValue)}" data-eap-config="end"><span>s</span></div>
         </label>
       </div>
 
-      <label class="eap-toggle">
-        <input type="checkbox" data-eap-config="loop" ${config.loop ? "checked" : ""}>
-        <span>${escapeHtml(localize("EAP.LoopRange"))}</span>
-      </label>
+      <div class="eap-mode-description" data-eap-mode-description aria-live="polite">
+        <span data-eap-mode-primary></span>
+        <span data-eap-mode-secondary hidden></span>
+      </div>
 
       <div class="eap-grid">
         <label>

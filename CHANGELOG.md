@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3
+
+Playback-mode clarity and pause-safe timeline seeking.
+
+- Replaced ambiguous Full Track / Loop Range checkbox combinations with a single localized **Playback Mode** selector: Full Track, Play Range Once, Loop Range, and Intro + Loop. The selector maps directly to the **existing** `fullTrack` and `loop` flags; no migration or new flag is required.
+- Start/End are shown as **Loop Start / Loop End** in Intro + Loop mode, with an unobtrusive live description: Intro 0 → Loop Start (once), Loop Start → Loop End (repeat).
+- Preserved the explicit OK commit boundary, per-PlaylistSound persistence, Reset Track, compact sidebar footprint and native playback architecture.
+- Fixed timeline seeking while paused: drag updates the absolute position and remains paused on every client. Playback resumes only after clicking Resume. Normal seek while playing or stopped keeps its established behavior.
+- Play, Pause/Resume, Stop and looping mechanics were otherwise kept unchanged; no new audio engine or playlist objects.
+
 ## 0.1.2
 
 Absolute transport correction and Intro + Loop capability (GitHub Issue #1).

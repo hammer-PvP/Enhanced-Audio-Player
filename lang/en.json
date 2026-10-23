@@ -35,5 +35,16 @@
   "EAP.PlayingTrack": "Playing",
   "EAP.Resume": "Resume",
   "EAP.NoTrackPlaying": "None",
-  "EAP.Notifications.PauseResumeFailed": "Enhanced Audio Player could not pause or resume playback."
+  "EAP.Notifications.PauseResumeFailed": "Enhanced Audio Player could not pause or resume playback.",
+  "EAP.PlaybackMode": "Playback Mode",
+  "EAP.Mode.full": "Full Track",
+  "EAP.Mode.range": "Play Range Once",
+  "EAP.Mode.loop": "Loop Range",
+  "EAP.Mode.intro": "Intro + Loop",
+  "EAP.LoopStart": "Loop Start",
+  "EAP.LoopEnd": "Loop End",
+  "EAP.IntroOnce": "Intro (once)",
+  "EAP.LoopRepeat": "Loop (repeat)",
+  "EAP.RangeOnce": "Range (once)",
+  "EAP.FullOnce": "Full track (once)"
 }
