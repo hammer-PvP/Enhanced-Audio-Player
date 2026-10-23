@@ -13,6 +13,7 @@ function nowId() {
 
 function requiresEnhancedPolicy(config) {
   return config?.fullTrack === false
+    || Boolean(config?.loop)
     || Number(config?.fadeIn) > 0
     || Number(config?.fadeOut) > 0;
 }
@@ -138,7 +139,13 @@ export class PlaybackRuntime {
       trackDuration: Number(session.trackDuration) || 0,
       rangeStart: Number(session.rangeStart) || 0,
       rangeEnd: Number(session.rangeEnd) || 0,
-      offset: clamp(Number(session.offset), Number(session.rangeStart) || 0, Number(session.rangeEnd) || 0),
+      loopStart: Number(session.loopStart) || 0,
+      loopEnd: Number(session.loopEnd) || 0,
+      playbackStart: Number(session.playbackStart) || 0,
+      seekMin: Number(session.seekMin) || 0,
+      seekMax: Number(session.seekMax) || 0,
+      introLoop: Boolean(session.introLoop),
+      offset: clamp(Number(session.offset), Number(session.seekMin) || 0, Number(session.seekMax) || 0),
       loop: Boolean(session.loop),
       fadeIn: Number(session.fadeIn) || 0,
       fadeOut: Number(session.fadeOut) || 0,
@@ -162,7 +169,7 @@ export class PlaybackRuntime {
 
     const key = sessionKey(playlist.id, playlistSound.id);
     const existing = this.getSession(playlist.id, playlistSound.id);
-    const offset = clamp(Number(requestedOffset), range.start, range.end);
+    const offset = clamp(Number(requestedOffset), range.seekMin, range.seekMax);
 
     await this.#ensurePlaylistActive(playlist, playlistSound);
 
@@ -201,7 +208,7 @@ export class PlaybackRuntime {
     const current = this.getPosition(playlist.id, playlistSound.id);
     const offset = repositionToStart
       ? range.start
-      : clamp(current, range.start, range.end);
+      : clamp(current, range.seekMin, range.seekMax);
 
     const command = this.#policyCommand({
       type: SOCKET_TYPES.RECONFIGURE,
@@ -251,6 +258,12 @@ export class PlaybackRuntime {
         trackDuration: duration,
         rangeStart: range.start,
         rangeEnd: range.end,
+        playbackStart: range.playbackStart,
+        loopStart: range.loopStart,
+        loopEnd: range.loopEnd,
+        seekMin: range.seekMin,
+        seekMax: range.seekMax,
+        introLoop: range.introLoop,
         offset,
         loop: Boolean(range.loop),
         fadeIn: Number(range.fadeIn) || 0,
@@ -270,7 +283,7 @@ export class PlaybackRuntime {
       soundId,
       sessionId: session.sessionId,
       controllerUserId: game.user.id,
-      offset: clamp(this.getPosition(playlistId, soundId), session.rangeStart, session.rangeEnd)
+      offset: clamp(this.getPosition(playlistId, soundId), session.seekMin, session.seekMax)
     };
 
     await this.#acceptCommand(command);
@@ -387,6 +400,12 @@ export class PlaybackRuntime {
       trackDuration: duration,
       rangeStart: range.start,
       rangeEnd: range.end,
+      playbackStart: range.playbackStart,
+      loopStart: range.loopStart,
+      loopEnd: range.loopEnd,
+      seekMin: range.seekMin,
+      seekMax: range.seekMax,
+      introLoop: range.introLoop,
       offset: range.start,
       loop: Boolean(range.loop),
       fadeIn: Number(range.fadeIn) || 0,
@@ -438,7 +457,13 @@ export class PlaybackRuntime {
       trackDuration: Number(duration) || 0,
       rangeStart: range.start,
       rangeEnd: range.end,
-      offset: clamp(Number(offset), range.start, range.end),
+      playbackStart: range.playbackStart,
+      loopStart: range.loopStart,
+      loopEnd: range.loopEnd,
+      seekMin: range.seekMin,
+      seekMax: range.seekMax,
+      introLoop: range.introLoop,
+      offset: clamp(Number(offset), range.seekMin, range.seekMax),
       loop: Boolean(range.loop),
       fadeIn: Number(range.fadeIn) || 0,
       fadeOut: Number(range.fadeOut) || 0,
@@ -516,10 +541,15 @@ export class PlaybackRuntime {
     const key = sessionKey(command.playlistId, command.soundId);
     if (!this.#isCurrent(key, command.revision)) return;
 
-    const rangeStart = Math.max(0, Number(command.rangeStart) || 0);
-    const rangeEnd = Math.max(rangeStart, Number(command.rangeEnd) || 0);
+    const playbackStart = Math.max(0, Number(command.playbackStart ?? command.rangeStart) || 0);
+    const rangeEnd = Math.max(playbackStart, Number(command.rangeEnd) || 0);
+    const loopStart = Math.max(0, Number(command.loopStart ?? command.rangeStart) || 0);
+    const loopEnd = Math.max(loopStart, Number(command.loopEnd ?? rangeEnd) || 0);
+    const seekMin = Math.max(0, Number(command.seekMin ?? playbackStart) || 0);
+    const seekMax = Math.max(seekMin, Number(command.seekMax ?? rangeEnd) || 0);
     const trackDuration = Math.max(0, Number(command.trackDuration) || 0);
-    if (trackDuration <= 0 || rangeEnd <= rangeStart || rangeEnd > trackDuration) return;
+    if (trackDuration <= 0 || rangeEnd <= playbackStart || rangeEnd > trackDuration) return;
+    if (command.loop && (loopStart >= loopEnd || loopEnd > trackDuration)) return;
 
     const prior = this.#sessions.get(key);
     if (prior) {
@@ -530,10 +560,17 @@ export class PlaybackRuntime {
 
     const session = {
       ...command,
-      rangeStart,
+      rangeStart: playbackStart,
       rangeEnd,
+      playbackStart,
+      loopStart,
+      loopEnd,
+      seekMin,
+      seekMax,
+      introLoop: Boolean(command.introLoop),
       trackDuration,
-      offset: clamp(Number(command.offset), rangeStart, rangeEnd),
+      offset: clamp(Number(command.offset), seekMin, seekMax),
+      fadeInApplied: command.type === SOCKET_TYPES.SEEK || Boolean(command.resume),
       loop: Boolean(command.loop),
       fadeIn: Math.max(0, Number(command.fadeIn) || 0),
       fadeOut: Math.max(0, Number(command.fadeOut) || 0),
@@ -547,7 +584,7 @@ export class PlaybackRuntime {
     this.#sessions.set(key, session);
 
     if (session.paused) {
-      await this.#stopOrPauseNative(session, {preferPause: true});
+      await this.#stopNative(session);
     } else {
       await this.#applyPlayback(session, session.offset, {restart: true, revision: command.revision});
     }
@@ -561,11 +598,11 @@ export class PlaybackRuntime {
     if (!session || session.sessionId !== command.sessionId || !session.active) return;
 
     session.revision = command.revision;
-    session.offset = clamp(Number(command.offset), session.rangeStart, session.rangeEnd);
+    session.offset = clamp(Number(command.offset), session.seekMin, session.seekMax);
     session.paused = true;
     session.generation += 1;
     this.#clearSchedules(session);
-    await this.#stopOrPauseNative(session, {preferPause: true});
+    await this.#stopNative(session);
     this.#onSessionChanged();
   }
 
@@ -625,28 +662,23 @@ export class PlaybackRuntime {
     const rangeEnd = Number(session.rangeEnd) || 0;
     if (trackDuration <= 0 || rangeStart < 0 || rangeEnd <= rangeStart || rangeEnd > trackDuration) return;
 
-    session.offset = clamp(Number(requestedOffset), rangeStart, rangeEnd);
+    session.offset = clamp(Number(requestedOffset), session.seekMin, session.seekMax);
     session.generation += 1;
     const generation = session.generation;
     this.#clearSchedules(session);
 
-    if (restart && (nativeSound.playing || Number(nativeSound.pausedTime) > 0)) {
-      // IMPORTANT: restarts/seeks are absolute transport operations. Pause is
-      // intentionally NOT used here because it preserves pausedTime and can
-      // contaminate a subsequent explicit offset (observed as 10 + seek 30 =>
-      // ~40 on live playback). Only the user-facing Pause command preserves
-      // pausedTime. Stop clears the native resume state before absolute play.
-      try {
-        await nativeSound.stop();
-      } catch (error) {
-        console.debug(`${MODULE_ID} | Native stop before absolute restart failed`, error);
-      }
-    }
+    // #playCycle is the single absolute-start path. It clears any native
+    // playing/paused state before supplying the requested source offset.
 
     if (!session.active || session.paused || generation !== session.generation || !this.#isCurrent(key, revision)) return;
     await this.#playCycle(session, session.offset, generation, revision);
   }
 
+  /**
+   * Every cycle works in absolute source seconds. The first pass starts at
+   * playbackStart (0 for Intro+Loop); subsequent passes start at loopStart.
+   * Only a buffer source can use sample-accurate native region looping.
+   */
   async #playCycle(session, offset, generation, revision) {
     const key = sessionKey(session.playlistId, session.soundId);
     if (!session.active || session.paused || generation !== session.generation || !this.#isCurrent(key, revision)) return;
@@ -656,75 +688,80 @@ export class PlaybackRuntime {
     const nativeSound = playlistSound?.sound;
     if (!playlistSound || !nativeSound) return;
 
-    const start = clamp(Number(offset), session.rangeStart, session.rangeEnd);
+    session.cycleSerial = (Number(session.cycleSerial) || 0) + 1;
+    const cycleSerial = session.cycleSerial;
+    const start = clamp(Number(offset), session.seekMin, session.seekMax);
     const remaining = Math.max(0, session.rangeEnd - start);
-    if (remaining <= 0) {
-      if (session.loop) return this.#playCycle(session, session.rangeStart, generation, revision);
+    if (remaining <= 0.001) {
+      if (session.loop) {
+        // Do not recursively replay an End-bound seek in the same tick.
+        return this.#playCycle(session, session.loopStart, generation, revision);
+      }
       return this.#finishSession(session, revision);
     }
 
-    const fadeInMs = Math.max(0, Math.min(Number(session.fadeIn) || 0, remaining) * 1000);
-    const fadeOutSec = Math.max(0, Math.min(Number(session.fadeOut) || 0, Math.max(0, remaining - fadeInMs / 1000)));
+    const initialFade = !session.fadeInApplied;
+    session.fadeInApplied = true;
+    const fadeInMs = initialFade ? Math.max(0, Math.min(Number(session.fadeIn) || 0, remaining) * 1000) : 0;
+    // A loop must never fade out at its seam; Fade Out is for terminal ends.
+    const fadeOutSec = session.loop ? 0 : Math.max(0, Math.min(Number(session.fadeOut) || 0, Math.max(0, remaining - fadeInMs / 1000)));
     const targetVolume = Number.isFinite(Number(playlistSound.volume)) ? Number(playlistSound.volume) : 1;
-
-    const canUseNativeLoop = Boolean(
-      session.loop
-      && nativeSound.isBuffer
-      && fadeInMs === 0
-      && fadeOutSec === 0
-      && Math.abs(start - session.rangeStart) < 0.0005
-    );
+    const canUseNativeLoop = Boolean(session.loop && nativeSound.isBuffer);
 
     const onended = () => {
-      if (!session.active || session.paused || generation !== session.generation || !this.#isCurrent(key, revision)) return;
+      if (!session.active || session.paused || generation !== session.generation || cycleSerial !== session.cycleSerial || !this.#isCurrent(key, revision)) return;
       if (canUseNativeLoop) return;
-      if (session.loop) void this.#playCycle(session, session.rangeStart, generation, revision);
-      else void this.#finishSession(session, revision);
+      if (session.loop) {
+        // Streamed files use the same native Sound, but start subsequent
+        // iterations at loopStart instead of repeating the introduction.
+        void this.#playCycle(session, session.loopStart, generation, revision);
+      } else {
+        void this.#finishSession(session, revision);
+      }
     };
 
-    const options = {
-      offset: start,
-      volume: targetVolume,
-      fade: fadeInMs,
-      onended
-    };
-
+    const options = {offset: start, volume: targetVolume, fade: fadeInMs, onended};
     if (canUseNativeLoop) {
       options.loop = true;
-      options.loopStart = session.rangeStart;
-      options.loopEnd = session.rangeEnd;
+      options.loopStart = session.loopStart;
+      options.loopEnd = session.loopEnd;
     } else {
       options.duration = remaining;
       options.loop = false;
     }
 
-    try {
-      await nativeSound.play(options);
-    } catch (error) {
+    // A streamed cycle can end with an internal paused position. Always clear
+    // it before starting an absolute offset, including a loop fallback.
+    if (nativeSound.playing || Number(nativeSound.pausedTime) > 0) {
+      try { await nativeSound.stop(); }
+      catch (error) { console.debug(`${MODULE_ID} | Stop before next absolute cycle failed`, error); }
+    }
+    if (!session.active || session.paused || generation !== session.generation || cycleSerial !== session.cycleSerial || !this.#isCurrent(key, revision)) return;
+
+    // Begin the expected-time clock before play(), so a concurrent native
+    // sync/reconcile cannot mistake an intro for the loop segment.
+    session.offset = start;
+    session.lastAppliedAt = Date.now();
+    try { await nativeSound.play(options); }
+    catch (error) {
       console.error(`${MODULE_ID} | Enhanced Sound.play failed`, error);
       return;
     }
 
-    if (!session.active || session.paused || generation !== session.generation || !this.#isCurrent(key, revision)) {
+    if (!session.active || session.paused || generation !== session.generation || cycleSerial !== session.cycleSerial || !this.#isCurrent(key, revision)) {
       if (nativeSound.playing || Number(nativeSound.pausedTime) > 0) {
-        try { await nativeSound.stop(); } catch (_error) { /* newest command will reconcile */ }
+        try { await nativeSound.stop(); } catch (_error) { /* newer command will reconcile */ }
       }
       return;
     }
-
-    session.lastAppliedAt = Date.now();
 
     if (fadeOutSec > 0 && !canUseNativeLoop) {
       const fadeAt = session.rangeEnd - fadeOutSec;
       try {
         const handle = nativeSound.schedule(() => {
           session.scheduleHandles.delete(handle);
-          if (!session.active || session.paused || generation !== session.generation || !this.#isCurrent(key, revision)) return;
-          void nativeSound.fade(0, {
-            duration: fadeOutSec * 1000,
-            from: targetVolume,
-            type: "linear"
-          });
+          if (!session.active || session.paused || generation !== session.generation || cycleSerial !== session.cycleSerial || !this.#isCurrent(key, revision)) return;
+          void nativeSound.fade(0, {duration: fadeOutSec * 1000, from: targetVolume, type: "linear"});
         }, fadeAt);
         session.scheduleHandles.add(handle);
       } catch (error) {
@@ -766,15 +803,15 @@ export class PlaybackRuntime {
     }
   }
 
-  async #stopOrPauseNative(session, {preferPause = false} = {}) {
+  /** Only the EAP session owns its paused absolute offset. */
+  async #stopNative(session) {
     const resolved = resolveSound(session.playlistId, session.soundId);
     const nativeSound = resolved?.sound?.sound;
     if (!nativeSound) return;
     try {
-      if (preferPause && nativeSound.playing) nativeSound.pause();
-      else if (!preferPause && (nativeSound.playing || Number(nativeSound.pausedTime) > 0)) await nativeSound.stop();
+      if (nativeSound.playing || Number(nativeSound.pausedTime) > 0) await nativeSound.stop();
     } catch (error) {
-      console.warn(`${MODULE_ID} | Native transport operation failed`, error);
+      console.warn(`${MODULE_ID} | Native transport stop failed`, error);
     }
   }
 
@@ -809,18 +846,20 @@ export class PlaybackRuntime {
   }
 
   #expectedCurrentTime(session) {
-    const start = Number(session.rangeStart) || 0;
-    const end = Number(session.rangeEnd) || start;
-    const base = clamp(Number(session.offset), start, end);
+    const firstStart = Number(session.playbackStart) || 0;
+    const end = Number(session.rangeEnd) || firstStart;
+    const base = clamp(Number(session.offset), session.seekMin, session.seekMax);
     if (!session.lastAppliedAt || session.paused) return base;
-
     const elapsed = Math.max(0, (Date.now() - Number(session.lastAppliedAt)) / 1000);
-    if (!session.loop) return clamp(base + elapsed, start, end);
+    if (!session.loop) return clamp(base + elapsed, firstStart, end);
 
-    const length = end - start;
-    if (length <= 0) return start;
-    const relative = (base - start + elapsed) % length;
-    return start + relative;
+    const untilFirstEnd = Math.max(0, end - base);
+    if (elapsed < untilFirstEnd) return base + elapsed;
+    const loopStart = Number(session.loopStart) || 0;
+    const loopEnd = Number(session.loopEnd) || end;
+    const length = loopEnd - loopStart;
+    if (length <= 0) return loopStart;
+    return loopStart + ((elapsed - untilFirstEnd) % length);
   }
 
   #clearSchedules(session) {

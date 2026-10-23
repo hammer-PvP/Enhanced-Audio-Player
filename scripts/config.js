@@ -39,19 +39,26 @@ export function sanitizePlaybackConfig(raw = {}) {
 /**
  * Resolve the effective runtime range without mutating the stored configuration.
  */
+/**
+ * Resolve the four playback policies without rewriting persisted flags.
+ * start/end describe the FIRST pass. loopStart/loopEnd describe repeats.
+ * Seek bounds are independent from the visual 0->file-duration timeline.
+ */
 export function effectiveRange(config, duration = 0) {
   const stored = sanitizePlaybackConfig(config);
   const safeDuration = Math.max(0, finiteNumber(duration, 0));
+  const introLoop = stored.fullTrack && stored.loop;
+  const fullPlayback = stored.fullTrack && !stored.loop;
 
-  if (stored.fullTrack) {
+  if (fullPlayback) {
+    const fadeIn = Math.min(stored.fadeIn, safeDuration);
     return {
-      valid: safeDuration > 0,
-      start: 0,
-      end: safeDuration,
-      length: safeDuration,
-      loop: false,
-      fadeIn: Math.min(stored.fadeIn, safeDuration),
-      fadeOut: Math.min(stored.fadeOut, Math.max(0, safeDuration - Math.min(stored.fadeIn, safeDuration)))
+      valid: safeDuration > 0, start: 0, end: safeDuration,
+      playbackStart: 0, loopStart: 0, loopEnd: safeDuration,
+      seekMin: 0, seekMax: safeDuration,
+      length: safeDuration, loop: false, introLoop: false,
+      fadeIn,
+      fadeOut: Math.min(stored.fadeOut, Math.max(0, safeDuration - fadeIn))
     };
   }
 
@@ -61,31 +68,17 @@ export function effectiveRange(config, duration = 0) {
     && requestedEnd > stored.start
     && stored.start < safeDuration
     && requestedEnd <= safeDuration;
-
-  if (!valid) {
-    return {
-      valid: false,
-      start: stored.start,
-      end: requestedEnd,
-      length: Math.max(0, requestedEnd - stored.start),
-      loop: Boolean(stored.loop),
-      fadeIn: stored.fadeIn,
-      fadeOut: stored.fadeOut
-    };
-  }
-
-  const length = requestedEnd - stored.start;
+  const playbackStart = introLoop ? 0 : stored.start;
+  const length = Math.max(0, requestedEnd - playbackStart);
   const fadeIn = Math.min(stored.fadeIn, length);
-  const fadeOut = Math.min(stored.fadeOut, Math.max(0, length - fadeIn));
-
   return {
-    valid: true,
-    start: stored.start,
-    end: requestedEnd,
-    length,
-    loop: Boolean(stored.loop),
+    valid, start: playbackStart, end: requestedEnd,
+    playbackStart, loopStart: stored.start, loopEnd: requestedEnd,
+    seekMin: playbackStart, seekMax: requestedEnd,
+    length, loop: Boolean(stored.loop), introLoop,
     fadeIn,
-    fadeOut
+    // A repeating loop must not fade out at its seam.
+    fadeOut: stored.loop ? 0 : Math.min(stored.fadeOut, Math.max(0, length - fadeIn))
   };
 }
 

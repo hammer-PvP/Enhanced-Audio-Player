@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.2
+
+Absolute transport correction and Intro + Loop capability (GitHub Issue #1).
+
+- Removed native `Sound.pause()` from EAP Pause/Resume. The EAP session owns the absolute paused position; native `Sound.stop()` clears `pausedTime` before an explicit resume offset. Play always starts a new session and Stop ends it.
+- Routed seeking, playback starts, streamed loop restarts, and Resume through a single absolute source-offset path; added per-cycle guards against stale end callbacks.
+- Enabled **Full Track + Loop Range** as Intro + Loop: play `0 → End` once, then repeat `Start → End`. Existing Full Track, Custom Range once, and Custom Range loop modes remain unchanged.
+- Separated first-pass start, loop start/end, and seek bounds; kept the timeline displaying the entire original audio file. Intro + Loop seek is bounded to `0 → End`.
+- Preserved existing PlaylistSound flags, OK commit, Reset Track, auto-follow, UI layout, native playlist progression, and V13.341+/V14 adapter.
+- Applied Fade In only to the initial entry and suppressed Fade Out across loop seams; used native buffer looping where supported, with a native-Sound streamed fallback.
+
+
 ## 0.1.1
 
 Active-track follow, Pause/Resume semantics, and compact-layout patch.

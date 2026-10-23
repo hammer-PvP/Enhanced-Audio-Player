@@ -307,7 +307,8 @@ export class EnhancedAudioPlayerUI {
         const changedKeys = changedConfigKeys(previous, draft);
         const structural = [...changedKeys].some(key => STRUCTURAL_KEYS.has(key));
         const fullTrackTurnedOff = changedKeys.has("fullTrack") && previous.fullTrack !== false && draft.fullTrack === false;
-        const repositionToStart = structural || fullTrackTurnedOff;
+        const policyChanged = changedKeys.has("fullTrack") || changedKeys.has("loop");
+        const repositionToStart = structural || fullTrackTurnedOff || policyChanged;
 
         // One atomic document write for the whole editor. The flag belongs to
         // this PlaylistSound occurrence, so identical file paths in other
@@ -512,6 +513,7 @@ export class EnhancedAudioPlayerUI {
     let validText = true;
     const fullTrackInput = panel.querySelector("[data-eap-config='fullTrack']");
     const fullTrack = Boolean(fullTrackInput?.checked);
+    const introLoop = fullTrack && Boolean(panel.querySelector("[data-eap-config='loop']")?.checked);
 
     for (const input of panel.querySelectorAll("[data-eap-config]")) {
       const key = input.dataset.eapConfig;
@@ -523,7 +525,7 @@ export class EnhancedAudioPlayerUI {
 
       const parsed = parseDecimal(input.value);
       const valid = Number.isFinite(parsed) && parsed >= 0;
-      const ignoredInvalidRangeField = fullTrack && (key === "start" || key === "end");
+      const ignoredInvalidRangeField = fullTrack && !introLoop && (key === "start" || key === "end");
       input.classList.toggle("eap-input-invalid", !valid && !ignoredInvalidRangeField);
       if (!valid) {
         if (ignoredInvalidRangeField || allowInvalidText) {
@@ -540,7 +542,8 @@ export class EnhancedAudioPlayerUI {
   #markInputValidity(input) {
     const key = input.dataset.eapConfig;
     const fullTrack = this.#panel?.querySelector("[data-eap-config='fullTrack']")?.checked;
-    if (fullTrack && (key === "start" || key === "end")) {
+    const loop = this.#panel?.querySelector("[data-eap-config='loop']")?.checked;
+    if (fullTrack && !loop && (key === "start" || key === "end")) {
       input.classList.remove("eap-input-invalid");
       return;
     }
@@ -557,20 +560,21 @@ export class EnhancedAudioPlayerUI {
     if (!draft || !committed) return;
     const fullTrack = draft.fullTrack !== false;
 
-    for (const key of ["start", "end", "loop"]) {
+    const fullOnly = fullTrack && !draft.loop;
+    for (const key of ["start", "end"]) {
       const input = panel.querySelector(`[data-eap-config='${key}']`);
-      if (input) input.disabled = fullTrack;
+      if (input) input.disabled = fullOnly;
     }
-
+    // Loop Range is available alongside Full Track (Intro + Loop).
     const timeline = panel.querySelector("[data-eap-timeline]");
-    timeline?.toggleAttribute("data-full-track", fullTrack);
+    timeline?.toggleAttribute("data-full-track", fullOnly);
     this.#updateTimelineMarkers(duration, draft);
 
     const range = effectiveRange(draft, duration);
     const hasInvalidText = Boolean(panel.querySelector(".eap-input-invalid"));
     const draftValid = duration > 0 && range.valid && !hasInvalidText;
     const warning = panel.querySelector("[data-eap-warning]");
-    if (warning) warning.hidden = fullTrack || duration <= 0 || draftValid;
+    if (warning) warning.hidden = fullOnly || duration <= 0 || draftValid;
 
     this.#updateDirtyStateWithoutRecursion(draft);
     const apply = panel.querySelector("[data-eap-action='apply']");
@@ -599,10 +603,10 @@ export class EnhancedAudioPlayerUI {
 
   #seekBounds(config, duration) {
     const safeDuration = Math.max(0, Number(duration) || 0);
-    if (!config || config.fullTrack !== false) return {valid: safeDuration > 0, min: 0, max: safeDuration};
+    if (!config || (config.fullTrack !== false && !config.loop)) return {valid: safeDuration > 0, min: 0, max: safeDuration};
     const range = effectiveRange(config, safeDuration);
     if (!range.valid) return {valid: false, min: 0, max: safeDuration};
-    return {valid: true, min: range.start, max: range.end};
+    return {valid: true, min: range.seekMin, max: range.seekMax};
   }
 
   #enforceDisplayedPosition(config, duration) {
@@ -631,7 +635,7 @@ export class EnhancedAudioPlayerUI {
 
     const config = suppliedConfig ?? this.#lastCommittedConfig;
     if (!config) return;
-    const fullTrack = config.fullTrack !== false;
+    const fullTrack = config.fullTrack !== false && !config.loop;
     const start = Math.max(0, Number(config.start) || 0);
     const end = Number.isFinite(Number(config.end)) ? Number(config.end) : duration;
     const startVisual = clamp(start, 0, duration);
@@ -809,7 +813,7 @@ export class EnhancedAudioPlayerUI {
       </div>
 
       ${loadError ? `<div class="eap-error">${escapeHtml(localize("EAP.LoadError"))}</div>` : ""}
-      <div class="eap-warning" data-eap-warning ${!config.fullTrack && !range.valid && duration > 0 ? "" : "hidden"}>${escapeHtml(localize("EAP.InvalidRangeHint"))}</div>
+      <div class="eap-warning" data-eap-warning ${(!config.fullTrack || config.loop) && !range.valid && duration > 0 ? "" : "hidden"}>${escapeHtml(localize("EAP.InvalidRangeHint"))}</div>
 
       <div class="eap-transport">
         <button type="button" data-eap-action="play" ${canPlay ? "" : "disabled"}>
@@ -869,7 +873,7 @@ export class EnhancedAudioPlayerUI {
           <span><span class="eap-progress-caption">${escapeHtml(localize("EAP.Current"))}</span> <strong data-eap-current>${formatTime(current)}</strong></span>
           <span><span class="eap-progress-caption">${escapeHtml(localize("EAP.Duration"))}</span> <strong data-eap-progress-end>${formatTime(duration)}</strong></span>
         </div>
-        <div class="eap-timeline" data-eap-timeline ${config.fullTrack ? "data-full-track" : ""}
+        <div class="eap-timeline" data-eap-timeline ${config.fullTrack && !config.loop ? "data-full-track" : ""}
              style="--eap-start-pct:${startPct}%;--eap-end-pct:${endPct}%;--eap-range-width:${widthPct}%">
           <div class="eap-range-highlight" aria-hidden="true"></div>
           <span class="eap-range-marker eap-range-marker-start" aria-hidden="true"></span>

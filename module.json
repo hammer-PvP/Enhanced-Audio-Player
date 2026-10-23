@@ -1,8 +1,8 @@
 {
   "id": "enhanced-audio-player",
   "title": "Enhanced Audio Player",
-  "description": "Adds a compact GM playback-policy layer to Foundry VTT V13/V14 native playlists with per-occurrence ranges/loops/fades, explicit OK configuration, active-track auto-follow, distinct Play and Pause/Resume transport, full-duration absolute seek, and native playlist progression without replacing Foundry audio.",
-  "version": "0.1.1",
+  "description": "Compact system-agnostic playback layer for native Foundry playlists: per-occurrence Start/End, Full Track, Intro + Loop, fade, accurate absolute Pause/Resume, timeline seek, auto-follow, and OK commit without replacing the audio engine.",
+  "version": "0.1.2",
   "authors": [
     {
       "name": "hammer-PvP",
@@ -34,7 +34,7 @@
   "socket": true,
   "url": "https://github.com/hammer-PvP/Enhanced-Audio-Player",
   "manifest": "https://github.com/hammer-PvP/Enhanced-Audio-Player/releases/latest/download/module.json",
-  "download": "https://github.com/hammer-PvP/Enhanced-Audio-Player/releases/download/v0.1.1/Enhanced-Audio-Player.zip",
+  "download": "https://github.com/hammer-PvP/Enhanced-Audio-Player/releases/download/v0.1.2/Enhanced-Audio-Player.zip",
   "readme": "https://github.com/hammer-PvP/Enhanced-Audio-Player/blob/main/README.md",
   "changelog": "https://github.com/hammer-PvP/Enhanced-Audio-Player/blob/main/CHANGELOG.md",
   "bugs": "https://github.com/hammer-PvP/Enhanced-Audio-Player/issues"

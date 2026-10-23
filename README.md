@@ -2,7 +2,7 @@
 
 Enhanced Audio Player is a system-agnostic Foundry VTT module that adds a compact GM-only playback-control layer below the native Playlist Directory. It does not replace Foundry playlists, PlaylistSound documents, Sound objects, or the audio engine.
 
-## v0.1.1 scope
+## v0.1.2 scope
 
 - Click a sound row inside an expanded native Playlist to select that exact PlaylistSound occurrence without starting playback.
 - The panel distinguishes **Selected Track** (the occurrence being viewed/edited) from **Playing** (the most recently started active occurrence).
@@ -10,11 +10,11 @@ Enhanced Audio Player is a system-agnostic Foundry VTT module that adds a compac
 - After that automatic jump, the GM remains free to click another sound and edit it while the active track continues. Selection is not stolen again until another track genuinely starts.
 - Native playlist management and ordering remain Foundry-owned.
 - Every unconfigured PlaylistSound defaults to **Full Track**.
-- Disable Full Track to configure a custom Start and End range. Optional **Loop Range** repeats only that configured range.
+- Configure a precise Start and End section for a custom range, or combine **Full Track + Loop Range** to play the intro once (0 → End) and then repeat Start → End indefinitely.
 - Fade In and Fade Out remain available per PlaylistSound occurrence.
 - Configuration editing uses a local draft and a single explicit **OK** button. Typing does not write flags or rerender the PlaylistSound.
-- **Play** always starts a new playback from the effective beginning: 0 for Full Track, Start for Custom Range.
-- The middle transport button is **Pause / Resume**: Pause preserves the exact current position; Resume continues from that position.
+- **Play** always starts a new playback from the effective beginning: 0 for Full Track or Intro + Loop, Start for Custom Range.
+- The middle transport button is **Pause / Resume**: EAP stores the absolute paused position and stops the native Sound without retaining native pausedTime. Resume continues at the same source position, never adding offsets.
 - **Stop** terminates playback and returns the stopped position to 0 (Full Track) or Start (Custom Range).
 - Full-duration timeline, bounded seek, absolute seeking, Reset Track, command serialization, and per-occurrence persistence retain the stable v0.1.0 behavior.
 - Playback policy remains scoped to the exact `Playlist ID + PlaylistSound ID`, never to the audio file path. Duplicate uses of the same file can behave differently in Root, Playlist A, Playlist B, and so on.
@@ -26,11 +26,12 @@ Enhanced Audio Player is a system-agnostic Foundry VTT module that adds a compac
 
 | Saved mode | Seek bounds | Playback behavior |
 | --- | --- | --- |
-| Full Track | 0 → source duration | Play starts at 0 and plays the complete source. |
+| Full Track (Loop Off) | 0 → source duration | Play starts at 0 and plays the complete source. |
+| Full Track + Loop Range | 0 → End | Plays intro 0 → End once, then repeats Start → End (no outro). |
 | Custom Range + Loop Off | Start → End | Play starts at Start, ends at End once, then allows the parent sequential/shuffled playlist to advance normally. |
 | Custom Range + Loop On | Start → End | Play starts at Start and repeats Start → End until stopped or another track takes over. |
 
-The timeline itself always spans 0 → source duration. Custom Range changes only the allowed seek area and playback policy, not the visual time scale.
+The timeline itself always spans 0 → source duration. Custom Range allows seeking only Start → End; Intro + Loop allows 0 → End; Full Track without looping permits 0 → source duration. The scale is always the complete source.
 
 ## Selected vs Playing
 
@@ -75,6 +76,7 @@ Enhanced Audio Player does not create its own playlist order. For non-looping cu
 - **Pause** = freeze the current Enhanced position while keeping the session resumable.
 - **Resume** = continue that paused session from its stored absolute position.
 - **Stop** = end the session. The next Play starts from the beginning again.
+- **Intro + Loop** = first passage starts at 0, then repeats only Start → End; Fade In is applied once and Fade Out is not applied at the loop seam. Buffered sources use native region looping; streamed sources reuse the native Sound with a per-cycle restart.
 - **Reset Track** = transport barrier + removal of only that PlaylistSound occurrence's EAP playback flag.
 
 ## Persistence
