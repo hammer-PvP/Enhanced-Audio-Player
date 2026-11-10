@@ -1,121 +1,61 @@
 # Enhanced Audio Player
 
-Enhanced Audio Player is a system-agnostic Foundry VTT module that adds a compact GM-only playback-control layer below the native Playlist Directory. It does not replace Foundry playlists, PlaylistSound documents, Sound objects, or the audio engine.
+Enhanced Audio Player is a lightweight, system-agnostic Foundry VTT module that places a compact GM-only playback controller below the native Playlists directory. All audio remains on Foundry's native `PlaylistSound` / `Sound` engine. No independent playlists or audio players are created.
 
+## Playback configuration (v0.1.4)
 
-### Playback mode (v0.1.3)
+Select a sound **inside an expanded native playlist**. The module shows two optional checkboxes. **Their time fields appear only when enabled**:
 
-Choose the playback policy in the compact **Playback Mode** dropdown and press **OK** to save it on that particular PlaylistSound occurrence:
+- **Intro — Play Once:** define `Intro Start` and `Intro End` to play that portion once. With no loop enabled, the sound ends there and the playlist advances when its native mode supports Next.
+- **Continuous Loop:** define `Loop Start` and `Loop End` to repeat only that portion indefinitely.
+- **Both enabled:** the intro plays once, then playback jumps directly to the independent loop range and repeats there. For example, Intro `00:05 → 00:20`, Loop `00:35 → 01:17`.
+- **Neither enabled:** the ordinary `Start Playback At` field appears. The track plays from this point to its actual end. An optional `Repeat Track` checkbox repeats from that start point to the end; without it, the next track can play naturally.
 
-| Mode | Playback behavior |
-| --- | --- |
-| Full Track | Play 0 → whole source once. |
-| Play Range Once | Play Start → End once, then let the native playlist advance when applicable. |
-| Loop Range | Repeat Start → End until stopped. |
-| Intro + Loop | Play 0 → Loop End once, then repeat Loop Start → Loop End. The intro 0 → Loop Start does not repeat. |
+`Continuous Loop` already means infinite repetition. `Repeat Track` is shown only when neither Intro nor Continuous Loop is selected.
 
-The **Loop Start** and **Loop End** labels appear in Intro + Loop mode. This is only a clearer interface for the existing `fullTrack`/`loop` flags, and no migration is necessary. If playback is **paused**, dragging the timeline only adjusts the held absolute position. Click **Resume** to continue from that position without starting audio during the drag.
+**Time entry:** write `77`, `1:17`, `1:17.250`, `2:35,5`, or `01:02:03.005`. The display uses `MM:SS.mmm` (or `HH:MM:SS.mmm` for longer audio); internally the times are stored as seconds. Fade In / Fade Out remain seconds.
 
-## Core functionality
+Click **OK** to validate and save the complete draft once. Typing does **not** write flags, rebuild the editor or disturb focus. **Reset Track** removes only this occurrence's Enhanced Audio Player flags, restoring the unconfigured default. Any edits without OK are discarded on track change or native auto-follow.
 
-- Click a sound row inside an expanded native Playlist to select that exact PlaylistSound occurrence without starting playback.
-- The panel distinguishes **Selected Track** (the occurrence being viewed/edited) from **Playing** (the most recently started active occurrence).
-- When a new PlaylistSound actually starts — including native Next/sequential progression — the player automatically follows and selects that new occurrence, discarding any uncommitted draft on the previously selected occurrence.
-- After that automatic jump, the GM remains free to click another sound and edit it while the active track continues. Selection is not stolen again until another track genuinely starts.
-- Native playlist management and ordering remain Foundry-owned.
-- Every unconfigured PlaylistSound defaults to **Full Track**.
-- Choose **Playback Mode** to play the whole track, play a range once, loop a range, or play **Intro + Loop** (from 0 through Loop End once, followed by Loop Start → Loop End repeats).
-- Fade In and Fade Out remain available per PlaylistSound occurrence.
-- Configuration editing uses a local draft and a single explicit **OK** button. Typing does not write flags or rerender the PlaylistSound.
-- **Play** always starts a new playback from the effective beginning: 0 for Full Track or Intro + Loop, Start for Custom Range.
-- The middle transport button is **Pause / Resume**: EAP stores the absolute paused position and stops the native Sound without retaining native pausedTime. Resume continues at the same source position, never adding offsets.
-- **Stop** terminates playback and returns the stopped position to 0 (Full Track) or Start (Custom Range).
-- Full-duration timeline, bounded seek, absolute seeking, Reset Track, command serialization, and per-occurrence persistence retain the stable v0.1.0 behavior.
-- Playback policy remains scoped to the exact `Playlist ID + PlaylistSound ID`, never to the audio file path. Duplicate uses of the same file can behave differently in Root, Playlist A, Playlist B, and so on.
-- A saved policy is honored whenever that PlaylistSound starts through Foundry's native playlist flow, not only through Enhanced Play.
-- The UI is vertically compacted by reducing padding, gaps, row heights, and control heights while preserving the existing width and two-column Start/End and Fade layouts.
-- Foundry V13 Stable 13.341+ and V14 continue sharing one runtime and compatibility adapter.
+## Usage
 
-## Playback rules
+1. Open Foundry's Playlists sidebar and expand a Playlist.
+2. Click the **name of a sound** (not the native Play button) to select it. Selection does not play anything.
+3. Choose Intro, Continuous Loop, both, or neither, and enter the relevant time ranges.
+4. Optionally set Fade In / Fade Out; click **OK**.
+5. Use the Enhanced Play/Pause/Resume/Stop controls or let Foundry reach this sound naturally in a sequential/shuffle Playlist.
 
-| Saved mode | Seek bounds | Playback behavior |
-| --- | --- | --- |
-| Full Track | 0 → source duration | Play starts at 0 and plays the complete source. |
-| Intro + Loop | 0 → End | Plays intro 0 → End once, then repeats Start → End (no outro). |
-| Play Range Once | Start → End | Play starts at Start, ends at End once, then allows the parent sequential/shuffled playlist to advance normally. |
-| Loop Range | Start → End | Play starts at Start and repeats Start → End until stopped or another track takes over. |
+### Transport
 
-The timeline itself always spans 0 → source duration. Custom Range allows seeking only Start → End; Intro + Loop allows 0 → End; Full Track without looping permits 0 → source duration. The scale is always the complete source.
+- **Play** starts a *new* execution from its configured beginning, ignoring any previous pause.
+- **Pause** records the absolute position; **Resume** continues precisely there, without doubling the offset.
+- **While paused**, dragging the timeline changes only the stored seek point and **does not resume audio**.
+- **Stop** fully ends the current session and resets the playhead to the policy start.
+- The timeline always spans the **entire original file duration**. Highlighted regions show the configured intro and loop. Seeking stays within the playable sections of the selected policy; gaps between Intro and Loop are skipped.
+- **Selected** and **Playing** are separate: the GM may select another occurrence to edit while one is sounding. A newly started track is automatically selected once, unless the GM selects another before the next change.
 
-## Selected vs Playing
+## Playlist integration and persistence
 
-The player intentionally separates editor focus from playback focus:
+Each configuration belongs to one native embedded `PlaylistSound` under its parent Playlist, stored in `flags.enhanced-audio-player.playback`, never keyed by file path. The same `.ogg` or `.mp3` in Playlist A and Playlist B can have completely independent intro/loop settings and Reset operations. No custom database or audio files are created.
 
-- **Selected Track** is the occurrence whose saved configuration/draft is shown in the editor.
-- **Playing** is the occurrence most recently started by Foundry/EAP.
-- A new playback start automatically selects that occurrence once.
-- The GM may then select a different occurrence for configuration while the active one keeps playing.
-- If another track starts later (for example via `Playlist.playNext`), the player auto-follows again.
-- Auto-follow never saves an uncommitted draft. Only **OK** persists configuration.
+Saved policies are respected when Foundry starts the sound natively, including natural transitions between playlist entries. A non-looping Enhanced segment ends locally and the GM-side controller delegates Next to Foundry's playlist order where supported. Looping policies remain on the same track until stopped or changed.
 
-## Explicit OK editing
+**Version migration:** v0.1.4 reads older v0.1.3 `fullTrack/start/end/loop` flags and translates them into the equivalent settings in memory. The next click of OK saves the newer independent Intro/Loop schema for that occurrence; existing flags are not silently rewritten. Legacy Intro + Loop becomes Intro `0 → old Start` and Loop `old Start → old End`.
 
-Editing is transactional:
+### Technical note on native playback duration
 
-1. Select the exact PlaylistSound occurrence you want to configure.
-2. Choose a Playback Mode and edit Start/End (or Loop Start/Loop End for Intro + Loop), Fade In, or Fade Out locally.
-3. The timeline markers may preview the draft, but the persisted playback policy remains unchanged while the editor is dirty.
-4. Click **OK** to validate and save the entire configuration in one document update.
-5. If that occurrence is already playing, the committed policy is reconciled immediately.
-
-While unsaved changes exist, Play and timeline seek are disabled so the transport cannot disagree with the saved policy. Pause/Resume and Stop remain available for a currently selected active session.
-
-## Per-playlist / per-occurrence persistence
-
-Playback policy belongs to the PlaylistSound embedded inside its parent Playlist:
-
-`Playlist ID + PlaylistSound ID -> flags.enhanced-audio-player.playback`
-
-It is **not** keyed by `sound.path` or file name. Resetting one occurrence does not change any other occurrence that happens to use the same physical audio source.
-
-## Native playlist playback policy
-
-A configured occurrence keeps its policy when Foundry itself starts the sound, including sequential/shuffled playlist progression. The module listens to the native PlaylistSound playing state, loads that exact occurrence's flags, and applies the policy through its native `PlaylistSound.sound` object.
-
-Enhanced Audio Player does not create its own playlist order. For non-looping custom ranges it delegates next-track progression to Foundry's public Playlist progression behavior.
-
-## Transport semantics
-
-- **Play** = new playback from the effective beginning. It does not resume a paused position.
-- **Pause** = freeze the current Enhanced position while keeping the session resumable.
-- **Resume** = continue that paused session from its stored absolute position.
-- **Stop** = end the session. The next Play starts from the beginning again.
-- **Intro + Loop** = first passage starts at 0, then repeats only Start → End; Fade In is applied once and Fade Out is not applied at the loop seam. Buffered sources use native region looping; streamed sources reuse the native Sound with a per-cycle restart.
-- **Reset Track** = transport barrier + removal of only that PlaylistSound occurrence's EAP playback flag.
-
-## Persistence
-
-Persisted values are Full Track, Start, End, Loop Range, Fade In, and Fade Out. Selection, active/playing indicator, current progress, pause position, editor draft, dirty state, and UI state are runtime-only.
-
-## Design contract
-
-Enhanced Audio Player intentionally does **not** provide its own playlists, soundboard, waveform editor, cue points, editable markers/events, multiple ranges, intro/loop/outro sequencing, or crossfade system.
-
-It also does not replace `Playlist`, `PlaylistSound`, `Sound`, or global `Sound.prototype.play` behavior. Foundry remains the owner of playlist structure, playback state, synchronization, and the actual audio engine; EAP adds per-occurrence playback policy on top of those native objects.
+Enhanced Audio Player no longer provides `Sound.play({duration})` or native loop-region options that could interfere with Foundry V13's own displayed track length. It plays the full underlying native sound and uses audio-time boundary scheduling to end or repeat the chosen segments. Loop transitions on some streamed/buffered sources may have a very brief seam depending on buffering; they are not advertised as sample-perfect.
 
 ## Compatibility
 
-- Foundry VTT: minimum Version 13 Stable build 341 (`13.341`)
-- Supported core generations: V13 Stable (341+) and V14
-- Verified manifest target: Foundry VTT 14.365
-- Game system: Any
+- Foundry VTT: V13 Stable build `13.341` and newer; V14.
+- Game system: Any / system-agnostic (including non-D&D systems).
+- V14 manifest verified target carried forward: `14.365`.
 
-## Installation
+The module intentionally does not provide its own audio engine, soundboard, waveform editor, cue points, automation, multiple-range editor, crossfade or Intro→Loop→Outro sequencer.
 
-Manifest URL:
+## Links
 
-`https://github.com/hammer-PvP/Enhanced-Audio-Player/releases/latest/download/module.json`
+Repository: https://github.com/hammer-PvP/Enhanced-Audio-Player
 
-Repository:
-
-`https://github.com/hammer-PvP/Enhanced-Audio-Player`
+Manifest: https://github.com/hammer-PvP/Enhanced-Audio-Player/releases/latest/download/module.json

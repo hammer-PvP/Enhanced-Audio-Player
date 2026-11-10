@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.4
+
+Independent Intro/Loop UI, friendly time entry, and full-length native audio regression fix.
+
+- Removed the Playback Mode dropdown. Added two independent checkboxes, **Intro — Play Once** and **Continuous Loop**, with their Start/End time fields conditionally shown. When both are off, show **Start Playback At** and optional **Repeat Track**.
+- Intro and Loop may now be noncontiguous. A contiguous intro/loop plays continuously through the first loop passage before repeating, avoiding an unnecessary first-pass restart.
+- Added `MM:SS.mmm` / `HH:MM:SS.mmm` time display, plus input parsing for seconds, colon-delimited time, and comma/period decimals. Explicit **OK** remains the sole commit.
+- Removed `duration`, `loopStart` and `loopEnd` playback options from the native `Sound.play()` call. Use `Sound.schedule()` for segment boundaries without truncating the source's own duration or leaving old loop properties on the Sound after switching policies.
+- Preferred original audio-buffer/media-element metadata for true source duration. Preserve absolute Play/Pause/Resume/Stop/Seek semantics and per-PlaylistSound flags.
+- Added in-memory conversion from v0.1.3 four-mode flags to schema v2 without writing any document until the GM explicitly confirms OK. Reset still affects only the selected occurrence.
+- Updated EN and PT-BR strings, README, and localized editor summaries. No additional soundboard/audio engine or other module feature families.
+
 ## 0.1.3
 
 Playback-mode clarity and pause-safe timeline seeking.

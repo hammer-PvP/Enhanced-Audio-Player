@@ -16,7 +16,7 @@
   "EAP.Current": "Atual",
   "EAP.Duration": "Duração",
   "EAP.ResetTrack": "Resetar Faixa",
-  "EAP.InvalidRangeHint": "O trecho salvo está fora da duração desta faixa. Ajuste Início/Fim ou resete a faixa.",
+  "EAP.InvalidRangeHint": "Intervalo de tempo inválido. Confira os inícios e fins de Introdução/Loop ativados e a duração total do arquivo.",
   "EAP.Status.Idle": "Parado",
   "EAP.Status.Native": "Reprodução nativa",
   "EAP.Status.Enhanced": "Reprodução aprimorada",
@@ -46,5 +46,11 @@
   "EAP.IntroOnce": "Introdução (uma vez)",
   "EAP.LoopRepeat": "Loop (repetir)",
   "EAP.RangeOnce": "Trecho (uma vez)",
-  "EAP.FullOnce": "Faixa completa (uma vez)"
+  "EAP.FullOnce": "Faixa completa (uma vez)",
+  "EAP.IntroToggle": "Introdução — tocar uma vez",
+  "EAP.LoopToggle": "Loop contínuo",
+  "EAP.IntroStart": "Início da introdução",
+  "EAP.IntroEnd": "Fim da introdução",
+  "EAP.StartPlaybackAt": "Começar reprodução em",
+  "EAP.RepeatTrack": "Repetir faixa"
 }

@@ -302,27 +302,35 @@
   outline: 1px solid var(--color-border-highlight, var(--color-warm-2, #c9a227));
 }
 
-/* v0.1.3: compact playback policy selector; no transport geometry changes. */
-.eap-mode-field { display: grid; gap: 0.13rem; margin: 0.16rem 0 0.22rem; }
-.eap-mode-field > label { opacity: 0.82; font-size: 0.9em; }
-.eap-mode-field select {
-  width: 100%;
-  height: 27px;
-  min-height: 25px;
-  padding: 0.1rem 0.38rem;
-  border: 1px solid var(--color-border-light-2, rgba(255,255,255,0.15));
-  border-radius: 4px;
-  background: var(--color-bg-option, rgba(0,0,0,0.28));
-  color: var(--color-text-primary, inherit);
-}
-.eap-grid[hidden] { display: none !important; }
-.eap-mode-description {
-  display: grid;
-  gap: 0.07rem;
-  margin: 0.09rem 0 0.22rem;
-  font-size: 0.79em;
-  opacity: 0.79;
-  font-variant-numeric: tabular-nums;
-}
-.eap-mode-description > span[hidden] { display: none; }
-.eap-mode-description[data-mode="intro"] { opacity: 0.96; }
+
+/* v0.1.4: compact, checkbox-driven independent Intro and Loop segments. */
+.eap-policy { display: grid; gap: 0.08rem; margin: 0.16rem 0 0.22rem; }
+.eap-policy > .eap-toggle { margin: 0.08rem 0; font-size: 0.95em; }
+.eap-policy > [data-eap-fields] { padding-left: 0.18rem; }
+.eap-policy [hidden], .eap-panel [hidden] { display: none !important; }
+.eap-single-time { display: grid; gap: 0.08rem; margin: 0.12rem 0; }
+.eap-single-time > span { font-size: 0.90em; opacity: 0.82; }
+.eap-single-time > input { width: 100%; height: 25px; min-height: 24px; text-align: right; font-variant-numeric: tabular-nums; }
+.eap-policy [data-eap-fields='base'] > .eap-toggle { margin-top: 0.12rem; }
+.eap-fades { margin-top: 0.14rem; }
+.eap-playback-preview { font-size: 0.77em; opacity: 0.82; line-height: 1.2; margin: 0.08rem 0 0.18rem; overflow-wrap: anywhere; }
+.eap-segment-highlight { display: none; position: absolute; z-index: 1; top: 50%; height: 5px; transform: translateY(-50%); border-radius: 999px; pointer-events: none; }
+.eap-intro-segment { left: var(--eap-intro-start); width: calc(var(--eap-intro-end) - var(--eap-intro-start)); background: color-mix(in srgb, var(--color-warm-2, #c9a227) 65%, transparent); }
+.eap-loop-segment { left: var(--eap-loop-start); width: calc(var(--eap-loop-end) - var(--eap-loop-start)); background: color-mix(in srgb, var(--color-cool-3, #4cc5b2) 68%, transparent); }
+.eap-intro-marker-start, .eap-intro-marker-end, .eap-loop-marker-start, .eap-loop-marker-end, .eap-base-marker-start { display:none; }
+.eap-intro-marker-start { left: var(--eap-intro-start); }
+.eap-intro-marker-end { left: var(--eap-intro-end); }
+.eap-loop-marker-start { left: var(--eap-loop-start); background: var(--color-cool-3, #4cc5b2); }
+.eap-loop-marker-end { left: var(--eap-loop-end); background: var(--color-cool-3, #4cc5b2); }
+.eap-base-marker-start { left: var(--eap-base-start); }
+.eap-timeline[data-has-intro] .eap-intro-segment,
+.eap-timeline[data-has-intro] .eap-intro-marker-start,
+.eap-timeline[data-has-intro] .eap-intro-marker-end,
+.eap-timeline[data-has-loop] .eap-loop-segment,
+.eap-timeline[data-has-loop] .eap-loop-marker-start,
+.eap-timeline[data-has-loop] .eap-loop-marker-end,
+.eap-timeline[data-has-base] .eap-base-marker-start { display: block; }
+.eap-timeline[data-has-intro] .eap-intro-segment,
+.eap-timeline[data-has-loop] .eap-loop-segment { opacity: 0.78; }
+.eap-marker-labels { font-size: 0.72em; align-items: start; }
+.eap-marker-labels > span { max-width: 50%; overflow-wrap: anywhere; }

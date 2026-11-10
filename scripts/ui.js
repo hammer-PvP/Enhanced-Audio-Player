@@ -6,25 +6,15 @@ import {
   normalizeRenderElement,
   resolvePlaylistSoundFromElement
 } from "./compat.js";
-import {clamp, effectiveRange, readPlaybackConfig, resetPlaybackConfig, writePlaybackConfig} from "./config.js";
+import {clamp, effectiveRange, readPlaybackConfig, resetPlaybackConfig, sanitizePlaybackConfig, sourceDuration, writePlaybackConfig} from "./config.js";
 
 const PANEL_CLASS = "eap-panel";
 const SELECTED_CLASS = "eap-selected-track";
 const INTERACTIVE_SELECTOR = "button, input, select, textarea, [data-action], [role='button'], .control, .controls, .sound-control, .volume";
-const NUMERIC_KEYS = new Set(["start", "end", "fadeIn", "fadeOut"]);
-const STRUCTURAL_KEYS = new Set(["start", "end"]);
-const PLAYBACK_MODES = Object.freeze(["full", "range", "loop", "intro"]);
-
-/** Keep the v0.1.2 flags schema: a mode is only a clearer editor projection. */
-export function playbackMode(config) {
-  if (config.fullTrack !== false) return config.loop ? "intro" : "full";
-  return config.loop ? "loop" : "range";
-}
-
-export function policyForMode(mode) {
-  if (!PLAYBACK_MODES.includes(mode)) return null;
-  return {fullTrack: mode === "full" || mode === "intro", loop: mode === "loop" || mode === "intro"};
-}
+const TIME_KEYS = new Set(["start", "introStart", "introEnd", "loopStart", "loopEnd"]);
+const NUMERIC_KEYS = new Set([...TIME_KEYS, "fadeIn", "fadeOut"]);
+const STRUCTURAL_KEYS = new Set(["start", "repeat", "introEnabled", "introStart", "introEnd", "loopEnabled", "loopStart", "loopEnd"]);
+const CONFIG_KEYS = ["start", "repeat", "introEnabled", "introStart", "introEnd", "loopEnabled", "loopStart", "loopEnd", "fadeIn", "fadeOut"];
 
 /**
  * Playlist-directory UI for the Enhanced Audio Player.
@@ -102,7 +92,7 @@ export class EnhancedAudioPlayerUI {
     let loadError = false;
     try {
       await sound.load();
-      const candidate = Number(sound.sound?.duration);
+      const candidate = sourceDuration(sound.sound);
       if (Number.isFinite(candidate) && candidate > 0) duration = this.#rememberDuration(playlist, sound, candidate);
     } catch (error) {
       loadError = true;
@@ -111,7 +101,7 @@ export class EnhancedAudioPlayerUI {
 
     if (token !== this.#renderToken || !this.#panel?.isConnected) return;
     const stored = readPlaybackConfig(sound);
-    const config = {...stored, end: stored.end ?? duration};
+    const config = {...stored};
     this.#lastCommittedConfig = {...config};
     this.#dirty = false;
     this.#ensureIdlePosition(playlist, sound, config, duration);
@@ -204,7 +194,6 @@ export class EnhancedAudioPlayerUI {
   }
 
   #defaultPosition(config, duration) {
-    if (config?.fullTrack !== false) return 0;
     const range = effectiveRange(config ?? {}, duration);
     return range.valid ? range.start : clamp(Number(config?.start) || 0, 0, Math.max(0, duration));
   }
@@ -317,16 +306,13 @@ export class EnhancedAudioPlayerUI {
       try {
         const previous = this.#lastCommittedConfig ?? readPlaybackConfig(sound);
         const changedKeys = changedConfigKeys(previous, draft);
-        const structural = [...changedKeys].some(key => STRUCTURAL_KEYS.has(key));
-        const fullTrackTurnedOff = changedKeys.has("fullTrack") && previous.fullTrack !== false && draft.fullTrack === false;
-        const policyChanged = changedKeys.has("fullTrack") || changedKeys.has("loop");
-        const repositionToStart = structural || fullTrackTurnedOff || policyChanged;
+        const repositionToStart = [...changedKeys].some(key => STRUCTURAL_KEYS.has(key));
 
         // One atomic document write for the whole editor. The flag belongs to
         // this PlaylistSound occurrence, so identical file paths in other
         // playlists remain completely independent.
         const saved = await writePlaybackConfig(sound, draft);
-        this.#lastCommittedConfig = {...saved, end: saved.end ?? duration};
+        this.#lastCommittedConfig = {...saved};
         this.#dirty = false;
         this.#setIdlePosition(playlist, sound, this.#defaultPosition(this.#lastCommittedConfig, duration));
 
@@ -357,7 +343,7 @@ export class EnhancedAudioPlayerUI {
         await this.#runtime.resetBarrierFromGM(playlist, sound);
         await resetPlaybackConfig(sound);
         this.#setIdlePosition(playlist, sound, 0);
-        this.#lastCommittedConfig = {fullTrack: true, start: 0, end: duration, loop: false, fadeIn: 0, fadeOut: 0};
+        this.#lastCommittedConfig = sanitizePlaybackConfig({schemaVersion: 2});
         this.#dirty = false;
         ui.notifications?.info(localize("EAP.Notifications.ResetComplete"));
         await this.renderPanel();
@@ -369,22 +355,22 @@ export class EnhancedAudioPlayerUI {
       }
     });
 
-    // Playback mode is a UI-only projection of the *existing* fullTrack/loop
-    // flags. Selecting a mode updates the local draft, never saves by itself.
-    panel.querySelector("[data-eap-mode]")?.addEventListener("change", () => {
-      this.#updateDirtyState();
-      this.#syncDraftVisuals(duration);
-    });
+    // Checkbox edits are drafts until OK. Hidden groups do not contribute
+    // invalid text or updates; no document write occurs during typing.
+    for (const toggle of panel.querySelectorAll("[data-eap-toggle]")) {
+      toggle.addEventListener("change", () => {
+        if ((toggle.dataset.eapToggle === "introEnabled" || toggle.dataset.eapToggle === "loopEnabled") && toggle.checked) {
+          const repeat = panel.querySelector("[data-eap-toggle='repeat']");
+          if (repeat) repeat.checked = false;
+        }
+        this.#syncDraftVisuals(duration);
+      });
+    }
 
     for (const input of panel.querySelectorAll("[data-eap-config]")) {
-      const key = input.dataset.eapConfig;
-      if (!NUMERIC_KEYS.has(key)) continue;
+      if (!NUMERIC_KEYS.has(input.dataset.eapConfig)) continue;
       this.#isolateNumericInput(input);
-      const updateDraft = () => {
-        this.#markInputValidity(input);
-        this.#updateDirtyState();
-        this.#syncDraftVisuals(duration);
-      };
+      const updateDraft = () => this.#syncDraftVisuals(duration);
       input.addEventListener("input", updateDraft);
       input.addEventListener("change", updateDraft);
     }
@@ -403,7 +389,7 @@ export class EnhancedAudioPlayerUI {
       const config = this.#lastCommittedConfig ?? readPlaybackConfig(sound);
       const bounds = this.#seekBounds(config, duration);
       const raw = Number(event.currentTarget.value);
-      const value = bounds.valid ? clamp(raw, bounds.min, bounds.max) : raw;
+      const value = bounds.valid ? allowedSeekOffset(config, duration, clamp(raw, bounds.min, bounds.max)) : raw;
       event.currentTarget.value = String(value);
       const currentLabel = panel.querySelector("[data-eap-current]");
       if (currentLabel) currentLabel.textContent = formatTime(value);
@@ -481,13 +467,6 @@ export class EnhancedAudioPlayerUI {
     }, {passive: false});
   }
 
-  #updateDirtyState() {
-    const draft = this.#readPanelConfig({allowInvalidText: true});
-    const hasInvalidText = Boolean(this.#panel?.querySelector(".eap-input-invalid"));
-    this.#dirty = hasInvalidText || !draft || !configsEqual(draft, this.#lastCommittedConfig);
-    this.#panel?.toggleAttribute("data-eap-dirty", this.#dirty);
-  }
-
   async #commitSeek({playlist, sound, duration, progress}) {
     if (this.#transportBusy || this.#dirty) {
       this.#isSeeking = false;
@@ -504,7 +483,7 @@ export class EnhancedAudioPlayerUI {
       }
 
       const bounds = this.#seekBounds(config, duration);
-      const offset = clamp(Number(progress.value), bounds.min, bounds.max);
+      const offset = allowedSeekOffset(config, duration, clamp(Number(progress.value), bounds.min, bounds.max));
       progress.value = String(offset);
       this.#setIdlePosition(playlist, sound, offset);
       await this.#runtime.seekFromGM(playlist, sound, config, duration, offset);
@@ -522,130 +501,84 @@ export class EnhancedAudioPlayerUI {
   #readPanelConfig({allowInvalidText = false} = {}) {
     const panel = this.#panel;
     if (!panel) return null;
-
-    const policy = policyForMode(panel.querySelector("[data-eap-mode]")?.value);
-    if (!policy) return null;
-    const config = {...policy};
+    const stored = this.#lastCommittedConfig ?? sanitizePlaybackConfig({schemaVersion: 2});
+    const config = {...stored};
+    config.introEnabled = Boolean(panel.querySelector("[data-eap-toggle='introEnabled']")?.checked);
+    config.loopEnabled = Boolean(panel.querySelector("[data-eap-toggle='loopEnabled']")?.checked);
+    config.repeat = !config.introEnabled && !config.loopEnabled
+      && Boolean(panel.querySelector("[data-eap-toggle='repeat']")?.checked);
     let validText = true;
-    const fullOnly = policy.fullTrack && !policy.loop;
-
     for (const input of panel.querySelectorAll("[data-eap-config]")) {
       const key = input.dataset.eapConfig;
       if (!NUMERIC_KEYS.has(key)) continue;
-
-      const parsed = parseDecimal(input.value);
+      const group = input.closest("[data-eap-fields]");
+      const visible = !group?.hidden;
+      if (!visible) {
+        input.classList.remove("eap-input-invalid");
+        continue;
+      }
+      const parsed = TIME_KEYS.has(key) ? parseTime(input.value) : parseDecimal(input.value);
       const valid = Number.isFinite(parsed) && parsed >= 0;
-      const ignoredInvalidRangeField = fullOnly && (key === "start" || key === "end");
-      input.classList.toggle("eap-input-invalid", !valid && !ignoredInvalidRangeField);
-      if (!valid) {
-        if (ignoredInvalidRangeField || allowInvalidText) {
-          const fallback = Number(this.#lastCommittedConfig?.[key]);
-          config[key] = Number.isFinite(fallback) ? fallback : 0;
-        } else validText = false;
-      } else config[key] = parsed;
+      input.classList.toggle("eap-input-invalid", !valid);
+      if (valid) config[key] = parsed;
+      else if (!allowInvalidText) validText = false;
     }
-
-    if (!validText && !allowInvalidText) return null;
-    return config;
-  }
-
-  #markInputValidity(input) {
-    const key = input.dataset.eapConfig;
-    const fullOnly = this.#panel?.querySelector("[data-eap-mode]")?.value === "full";
-    if (fullOnly && (key === "start" || key === "end")) {
-      input.classList.remove("eap-input-invalid");
-      return;
-    }
-    const parsed = parseDecimal(input.value);
-    input.classList.toggle("eap-input-invalid", !Number.isFinite(parsed) || parsed < 0);
+    return validText ? config : null;
   }
 
   #syncDraftVisuals(duration) {
     const panel = this.#panel;
-    if (!panel) return;
+    if (!panel || !this.#lastCommittedConfig) return;
 
-    const draft = this.#readPanelConfig({allowInvalidText: true}) ?? this.#lastCommittedConfig;
-    const committed = this.#lastCommittedConfig;
-    if (!draft || !committed) return;
-    const mode = playbackMode(draft);
-    const fullOnly = mode === "full";
-    const rangeInputs = panel.querySelector("[data-eap-range-fields]");
-    if (rangeInputs) rangeInputs.hidden = fullOnly;
-    for (const key of ["start", "end"]) {
-      const input = panel.querySelector(`[data-eap-config='${key}']`);
-      if (input) input.disabled = fullOnly;
-    }
-    const startTitle = panel.querySelector("[data-eap-start-title]");
-    const endTitle = panel.querySelector("[data-eap-end-title]");
-    if (startTitle) startTitle.textContent = localize(mode === "intro" ? "EAP.LoopStart" : "EAP.Start");
-    if (endTitle) endTitle.textContent = localize(mode === "intro" ? "EAP.LoopEnd" : "EAP.End");
-    this.#updateModeDescription(mode, draft, duration);
-    const timeline = panel.querySelector("[data-eap-timeline]");
-    timeline?.toggleAttribute("data-full-track", fullOnly);
-    this.#updateTimelineMarkers(duration, draft);
+    const introOn = Boolean(panel.querySelector("[data-eap-toggle='introEnabled']")?.checked);
+    const loopOn = Boolean(panel.querySelector("[data-eap-toggle='loopEnabled']")?.checked);
+    const introGroup = panel.querySelector("[data-eap-fields='intro']");
+    const loopGroup = panel.querySelector("[data-eap-fields='loop']");
+    const baseGroup = panel.querySelector("[data-eap-fields='base']");
+    if (introGroup) introGroup.hidden = !introOn;
+    if (loopGroup) loopGroup.hidden = !loopOn;
+    if (baseGroup) baseGroup.hidden = introOn || loopOn;
 
+    const draft = this.#readPanelConfig({allowInvalidText: true});
+    if (!draft) return;
+    const invalidText = Boolean(panel.querySelector(".eap-input-invalid"));
     const range = effectiveRange(draft, duration);
-    const hasInvalidText = Boolean(panel.querySelector(".eap-input-invalid"));
-    const draftValid = duration > 0 && range.valid && !hasInvalidText;
-    const warning = panel.querySelector("[data-eap-warning]");
-    if (warning) warning.hidden = fullOnly || duration <= 0 || draftValid;
+    const draftValid = duration > 0 && range.valid && !invalidText;
+    this.#dirty = invalidText || !configsEqual(draft, this.#lastCommittedConfig);
+    panel.toggleAttribute("data-eap-dirty", this.#dirty);
 
-    this.#updateDirtyStateWithoutRecursion(draft);
+    const warning = panel.querySelector("[data-eap-warning]");
+    if (warning) warning.hidden = duration <= 0 || draftValid;
     const apply = panel.querySelector("[data-eap-action='apply']");
     if (apply) apply.disabled = !this.#dirty || !draftValid || this.#transportBusy;
-
     const dirtyHint = panel.querySelector("[data-eap-dirty-hint]");
     if (dirtyHint) dirtyHint.hidden = !this.#dirty;
-
-    // Transport always uses the committed policy. While a draft is pending,
-    // Play/Seek are disabled so the visual editor can never disagree with the
-    // policy currently driving clients.
-    const committedValid = duration > 0 && effectiveRange(committed, duration).valid;
+    const committedValid = effectiveRange(this.#lastCommittedConfig, duration).valid;
     const play = panel.querySelector("[data-eap-action='play']");
     if (play) play.disabled = !committedValid || this.#dirty || this.#transportBusy;
     const progress = panel.querySelector("[data-eap-progress]");
     if (progress) progress.disabled = !committedValid || this.#dirty || this.#transportBusy;
-
-    if (!this.#isSeeking && !this.#dirty) this.#enforceDisplayedPosition(committed, duration);
+    this.#updateTimelineMarkers(duration, draft);
+    this.#updatePreview(draft, duration);
+    if (!this.#isSeeking && !this.#dirty) this.#enforceDisplayedPosition(this.#lastCommittedConfig, duration);
   }
 
-  #updateModeDescription(mode, draft, duration) {
-    const description = this.#panel?.querySelector("[data-eap-mode-description]");
-    if (!description) return;
-    const start = parseDecimal(this.#panel?.querySelector("[data-eap-config='start']")?.value);
-    const end = parseDecimal(this.#panel?.querySelector("[data-eap-config='end']")?.value);
-    const safeStart = Number.isFinite(start) ? start : 0;
-    const safeEnd = Number.isFinite(end) ? end : 0;
-    const first = description.querySelector("[data-eap-mode-primary]");
-    const second = description.querySelector("[data-eap-mode-secondary]");
-    description.dataset.mode = mode;
-    if (mode === "intro") {
-      if (first) first.textContent = `${localize("EAP.IntroOnce")}: ${formatTime(0)} → ${formatTime(safeStart)}`;
-      if (second) second.textContent = `${localize("EAP.LoopRepeat")}: ${formatTime(safeStart)} → ${formatTime(safeEnd)} ↺`;
-    } else if (mode === "loop") {
-      if (first) first.textContent = `${localize("EAP.LoopRepeat")}: ${formatTime(safeStart)} → ${formatTime(safeEnd)} ↺`;
-      if (second) second.textContent = "";
-    } else if (mode === "range") {
-      if (first) first.textContent = `${localize("EAP.RangeOnce")}: ${formatTime(safeStart)} → ${formatTime(safeEnd)}`;
-      if (second) second.textContent = "";
-    } else {
-      if (first) first.textContent = `${localize("EAP.FullOnce")}: ${formatTime(0)} → ${formatTime(duration)}`;
-      if (second) second.textContent = "";
-    }
-    if (second) second.hidden = !second.textContent;
-  }
-
-  #updateDirtyStateWithoutRecursion(draft) {
-    const hasInvalidText = Boolean(this.#panel?.querySelector(".eap-input-invalid"));
-    this.#dirty = hasInvalidText || !configsEqual(draft, this.#lastCommittedConfig);
-    this.#panel?.toggleAttribute("data-eap-dirty", this.#dirty);
+  #updatePreview(config, duration) {
+    const output = this.#panel?.querySelector("[data-eap-preview]");
+    if (!output) return;
+    const range = effectiveRange(config, duration);
+    const from = (a, b) => `${formatTime(a)} → ${formatTime(b)}`;
+    const intro = range.introEnabled ? `${localize("EAP.IntroOnce")}: ${from(range.introStart, range.introEnd)}` : "";
+    const loop = range.loopEnabled ? `${localize("EAP.LoopRepeat")}: ${from(range.loopStart, range.loopEnd)} ↺` : "";
+    const base = range.repeat
+      ? `${localize("EAP.RepeatTrack")}: ${from(range.start, range.end)} ↺`
+      : `${localize("EAP.FullOnce")}: ${from(range.start, range.end)}`;
+    output.textContent = [intro, loop].filter(Boolean).join(" · ") || base;
   }
 
   #seekBounds(config, duration) {
-    const safeDuration = Math.max(0, Number(duration) || 0);
-    if (!config || (config.fullTrack !== false && !config.loop)) return {valid: safeDuration > 0, min: 0, max: safeDuration};
-    const range = effectiveRange(config, safeDuration);
-    if (!range.valid) return {valid: false, min: 0, max: safeDuration};
+    const range = effectiveRange(config, duration);
+    if (!range.valid) return {valid: false, min: 0, max: duration};
     return {valid: true, min: range.seekMin, max: range.seekMax};
   }
 
@@ -672,27 +605,27 @@ export class EnhancedAudioPlayerUI {
     const panel = this.#panel;
     const timeline = panel?.querySelector("[data-eap-timeline]");
     if (!panel || !timeline || duration <= 0) return;
-
     const config = suppliedConfig ?? this.#lastCommittedConfig;
     if (!config) return;
-    const fullTrack = config.fullTrack !== false && !config.loop;
-    const start = Math.max(0, Number(config.start) || 0);
-    const end = Number.isFinite(Number(config.end)) ? Number(config.end) : duration;
-    const startVisual = clamp(start, 0, duration);
-    const endVisual = clamp(end, 0, duration);
-    const left = (startVisual / duration) * 100;
-    const right = (endVisual / duration) * 100;
+    const range = effectiveRange(config, duration);
+    const pct = value => `${clamp(Number(value) || 0, 0, duration) / duration * 100}%`;
+    timeline.style.setProperty("--eap-intro-start", pct(range.introStart));
+    timeline.style.setProperty("--eap-intro-end", pct(range.introEnd));
+    timeline.style.setProperty("--eap-loop-start", pct(range.loopStart));
+    timeline.style.setProperty("--eap-loop-end", pct(range.loopEnd));
+    timeline.style.setProperty("--eap-base-start", pct(range.start));
+    timeline.toggleAttribute("data-has-intro", range.introEnabled);
+    timeline.toggleAttribute("data-has-loop", range.loopEnabled);
+    timeline.toggleAttribute("data-has-base", !range.introEnabled && !range.loopEnabled && range.start > 0);
 
-    timeline.style.setProperty("--eap-start-pct", `${left}%`);
-    timeline.style.setProperty("--eap-end-pct", `${right}%`);
-    timeline.style.setProperty("--eap-range-width", `${Math.max(0, right - left)}%`);
-    timeline.toggleAttribute("data-full-track", fullTrack);
-
-    const startLabel = panel.querySelector("[data-eap-marker-start-label]");
-    const endLabel = panel.querySelector("[data-eap-marker-end-label]");
-    const isIntro = playbackMode(config) === "intro";
-    if (startLabel) startLabel.textContent = `${localize(isIntro ? "EAP.LoopStart" : "EAP.Start")} ${formatTime(start)}`;
-    if (endLabel) endLabel.textContent = `${localize(isIntro ? "EAP.LoopEnd" : "EAP.End")} ${formatTime(end)}`;
+    const first = panel.querySelector("[data-eap-marker-start-label]");
+    const second = panel.querySelector("[data-eap-marker-end-label]");
+    if (first) first.textContent = range.introEnabled
+      ? `${localize("EAP.IntroOnce")}: ${formatTime(range.introStart)}–${formatTime(range.introEnd)}`
+      : `${localize("EAP.Start")}: ${formatTime(range.start)}`;
+    if (second) second.textContent = range.loopEnabled
+      ? `${localize("EAP.LoopRange")}: ${formatTime(range.loopStart)}–${formatTime(range.loopEnd)}`
+      : `${localize("EAP.End")}: ${formatTime(range.end)}`;
   }
 
   #getDisplayedPosition(playlist, sound, config, duration) {
@@ -726,7 +659,7 @@ export class EnhancedAudioPlayerUI {
     const {playlist, sound} = resolved;
     const session = this.#runtime.getSession(playlist.id, sound.id);
     let duration = this.#cachedDuration(playlist, sound);
-    const candidate = Number(sound.sound?.duration);
+    const candidate = sourceDuration(sound.sound);
     if (!session && Number.isFinite(candidate) && candidate > 0) duration = this.#rememberDuration(playlist, sound, candidate);
     if (duration <= 0) return;
 
@@ -822,140 +755,90 @@ export class EnhancedAudioPlayerUI {
 
   #configuredPanelHtml({playlist, sound, config, duration, loadError}) {
     const range = effectiveRange(config, duration);
-    const endValue = config.end ?? duration;
     const canPlay = !loadError && duration > 0 && range.valid;
     const session = this.#runtime.getSession(playlist.id, sound.id);
-    const status = session?.paused
-      ? localize("EAP.Status.Paused")
-      : (session
-        ? localize("EAP.Status.Enhanced")
+    const status = session?.paused ? localize("EAP.Status.Paused")
+      : (session ? localize("EAP.Status.Enhanced")
         : (sound.sound?.playing || sound.playing ? localize("EAP.Status.Native") : localize("EAP.Status.Idle")));
-
-    const startPct = duration > 0 ? clamp(config.start, 0, duration) / duration * 100 : 0;
-    const endPct = duration > 0 ? clamp(endValue, 0, duration) / duration * 100 : 100;
-    const widthPct = Math.max(0, endPct - startPct);
     const current = this.#getDisplayedPosition(playlist, sound, config, duration);
+    const timeInput = (key, value) => `<input type="text" inputmode="decimal" autocomplete="off" spellcheck="false" value="${formatTime(value)}" data-eap-config="${key}">`;
+    const fields = (a, labelA, valueA, b, labelB, valueB) => `
+      <div class="eap-grid">
+        <label><span>${escapeHtml(localize(labelA))}</span><div class="eap-number">${timeInput(a, valueA)}</div></label>
+        <label><span>${escapeHtml(localize(labelB))}</span><div class="eap-number">${timeInput(b, valueB)}</div></label>
+      </div>`;
 
     return `
       <header class="eap-header">
         <span><i class="fa-solid fa-wave-square"></i> ${escapeHtml(localize("EAP.Title"))}</span>
         <span class="eap-status" data-eap-status data-state="${session?.paused ? "paused" : (session ? "enhanced" : "idle")}">${escapeHtml(status)}</span>
       </header>
-
       <div class="eap-track-summary">
-        <div class="eap-track-row">
-          <span class="eap-track-label">${escapeHtml(localize("EAP.SelectedTrack"))}</span>
-          <span class="eap-track-value"><strong class="eap-track-name" title="${escapeHtml(sound.name)}">${escapeHtml(sound.name)}</strong> <span class="eap-playlist-name">· ${escapeHtml(playlist.name)}</span></span>
-        </div>
-        <div class="eap-track-row">
-          <span class="eap-track-label">${escapeHtml(localize("EAP.PlayingTrack"))}</span>
-          <span class="eap-track-value"><strong class="eap-track-name" data-eap-playing-name></strong> <span class="eap-playlist-name" data-eap-playing-playlist></span></span>
-        </div>
+        <div class="eap-track-row"><span class="eap-track-label">${escapeHtml(localize("EAP.SelectedTrack"))}</span><span class="eap-track-value"><strong class="eap-track-name" title="${escapeHtml(sound.name)}">${escapeHtml(sound.name)}</strong> <span class="eap-playlist-name">· ${escapeHtml(playlist.name)}</span></span></div>
+        <div class="eap-track-row"><span class="eap-track-label">${escapeHtml(localize("EAP.PlayingTrack"))}</span><span class="eap-track-value"><strong class="eap-track-name" data-eap-playing-name></strong> <span class="eap-playlist-name" data-eap-playing-playlist></span></span></div>
       </div>
-
       ${loadError ? `<div class="eap-error">${escapeHtml(localize("EAP.LoadError"))}</div>` : ""}
-      <div class="eap-warning" data-eap-warning ${(!config.fullTrack || config.loop) && !range.valid && duration > 0 ? "" : "hidden"}>${escapeHtml(localize("EAP.InvalidRangeHint"))}</div>
-
+      <div class="eap-warning" data-eap-warning ${range.valid || duration <= 0 ? "hidden" : ""}>${escapeHtml(localize("EAP.InvalidRangeHint"))}</div>
       <div class="eap-transport">
-        <button type="button" data-eap-action="play" ${canPlay ? "" : "disabled"}>
-          <i class="fa-solid fa-play"></i> ${escapeHtml(localize("EAP.Play"))}
-        </button>
-        <button type="button" data-eap-action="pause" ${session || sound.playing || sound.sound?.playing ? "" : "disabled"}>
-          ${session?.paused
-            ? `<i class="fa-solid fa-play"></i> ${escapeHtml(localize("EAP.Resume"))}`
-            : `<i class="fa-solid fa-pause"></i> ${escapeHtml(localize("EAP.Pause"))}`}
-        </button>
-        <button type="button" data-eap-action="stop" ${session || sound.playing || sound.sound?.playing ? "" : "disabled"}>
-          <i class="fa-solid fa-stop"></i> ${escapeHtml(localize("EAP.Stop"))}
-        </button>
+        <button type="button" data-eap-action="play" ${canPlay ? "" : "disabled"}><i class="fa-solid fa-play"></i> ${escapeHtml(localize("EAP.Play"))}</button>
+        <button type="button" data-eap-action="pause" ${session || sound.playing || sound.sound?.playing ? "" : "disabled"}>${session?.paused ? `<i class="fa-solid fa-play"></i> ${escapeHtml(localize("EAP.Resume"))}` : `<i class="fa-solid fa-pause"></i> ${escapeHtml(localize("EAP.Pause"))}`}</button>
+        <button type="button" data-eap-action="stop" ${session || sound.playing || sound.sound?.playing ? "" : "disabled"}><i class="fa-solid fa-stop"></i> ${escapeHtml(localize("EAP.Stop"))}</button>
       </div>
-
-      <div class="eap-mode-field">
-        <label for="eap-playback-mode">${escapeHtml(localize("EAP.PlaybackMode"))}</label>
-        <select id="eap-playback-mode" data-eap-mode>
-          ${PLAYBACK_MODES.map(mode => `<option value="${mode}" ${playbackMode(config) === mode ? "selected" : ""}>${escapeHtml(localize(`EAP.Mode.${mode}`))}</option>`).join("")}
-        </select>
+      <div class="eap-policy">
+        <label class="eap-toggle"><input type="checkbox" data-eap-toggle="introEnabled" ${config.introEnabled ? "checked" : ""}> <strong>${escapeHtml(localize("EAP.IntroToggle"))}</strong></label>
+        <div data-eap-fields="intro" ${config.introEnabled ? "" : "hidden"}>
+          ${fields("introStart", "EAP.IntroStart", config.introStart, "introEnd", "EAP.IntroEnd", config.introEnd ?? duration)}
+        </div>
+        <label class="eap-toggle"><input type="checkbox" data-eap-toggle="loopEnabled" ${config.loopEnabled ? "checked" : ""}> <strong>${escapeHtml(localize("EAP.LoopToggle"))}</strong></label>
+        <div data-eap-fields="loop" ${config.loopEnabled ? "" : "hidden"}>
+          ${fields("loopStart", "EAP.LoopStart", config.loopStart, "loopEnd", "EAP.LoopEnd", config.loopEnd ?? duration)}
+        </div>
+        <div data-eap-fields="base" ${config.introEnabled || config.loopEnabled ? "hidden" : ""}>
+          <label class="eap-single-time"><span>${escapeHtml(localize("EAP.StartPlaybackAt"))}</span>${timeInput("start", config.start)}</label>
+          <label class="eap-toggle"><input type="checkbox" data-eap-toggle="repeat" ${config.repeat && !config.introEnabled && !config.loopEnabled ? "checked" : ""}> ${escapeHtml(localize("EAP.RepeatTrack"))}</label>
+        </div>
       </div>
-
-      <div class="eap-grid" data-eap-range-fields ${playbackMode(config) === "full" ? "hidden" : ""}>
-        <label>
-          <span data-eap-start-title>${escapeHtml(localize(playbackMode(config) === "intro" ? "EAP.LoopStart" : "EAP.Start"))}</span>
-          <div class="eap-number"><input type="text" inputmode="decimal" autocomplete="off" value="${numberValue(config.start)}" data-eap-config="start"><span>s</span></div>
-        </label>
-        <label>
-          <span data-eap-end-title>${escapeHtml(localize(playbackMode(config) === "intro" ? "EAP.LoopEnd" : "EAP.End"))}</span>
-          <div class="eap-number"><input type="text" inputmode="decimal" autocomplete="off" value="${numberValue(endValue)}" data-eap-config="end"><span>s</span></div>
-        </label>
+      <div class="eap-grid eap-fades" data-eap-fields="fades">
+        <label><span>${escapeHtml(localize("EAP.FadeIn"))}</span><div class="eap-number"><input type="text" inputmode="decimal" autocomplete="off" value="${numberValue(config.fadeIn)}" data-eap-config="fadeIn"><span>s</span></div></label>
+        <label><span>${escapeHtml(localize("EAP.FadeOut"))}</span><div class="eap-number"><input type="text" inputmode="decimal" autocomplete="off" value="${numberValue(config.fadeOut)}" data-eap-config="fadeOut"><span>s</span></div></label>
       </div>
-
-      <div class="eap-mode-description" data-eap-mode-description aria-live="polite">
-        <span data-eap-mode-primary></span>
-        <span data-eap-mode-secondary hidden></span>
-      </div>
-
-      <div class="eap-grid">
-        <label>
-          <span>${escapeHtml(localize("EAP.FadeIn"))}</span>
-          <div class="eap-number"><input type="text" inputmode="decimal" autocomplete="off" value="${numberValue(config.fadeIn)}" data-eap-config="fadeIn"><span>s</span></div>
-        </label>
-        <label>
-          <span>${escapeHtml(localize("EAP.FadeOut"))}</span>
-          <div class="eap-number"><input type="text" inputmode="decimal" autocomplete="off" value="${numberValue(config.fadeOut)}" data-eap-config="fadeOut"><span>s</span></div>
-        </label>
-      </div>
-
+      <div class="eap-playback-preview" data-eap-preview aria-live="polite"></div>
       <div class="eap-apply-row">
         <span class="eap-dirty-hint" data-eap-dirty-hint hidden>${escapeHtml(localize("EAP.UnsavedChanges"))}</span>
-        <button type="button" class="eap-apply" data-eap-action="apply" disabled>
-          <i class="fa-solid fa-check"></i> ${escapeHtml(localize("EAP.OK"))}
-        </button>
+        <button type="button" class="eap-apply" data-eap-action="apply" disabled><i class="fa-solid fa-check"></i> ${escapeHtml(localize("EAP.OK"))}</button>
       </div>
-
       <div class="eap-progress-wrap">
-        <div class="eap-progress-labels">
-          <span><span class="eap-progress-caption">${escapeHtml(localize("EAP.Current"))}</span> <strong data-eap-current>${formatTime(current)}</strong></span>
-          <span><span class="eap-progress-caption">${escapeHtml(localize("EAP.Duration"))}</span> <strong data-eap-progress-end>${formatTime(duration)}</strong></span>
-        </div>
-        <div class="eap-timeline" data-eap-timeline ${config.fullTrack && !config.loop ? "data-full-track" : ""}
-             style="--eap-start-pct:${startPct}%;--eap-end-pct:${endPct}%;--eap-range-width:${widthPct}%">
-          <div class="eap-range-highlight" aria-hidden="true"></div>
-          <span class="eap-range-marker eap-range-marker-start" aria-hidden="true"></span>
-          <span class="eap-range-marker eap-range-marker-end" aria-hidden="true"></span>
+        <div class="eap-progress-labels"><span><span class="eap-progress-caption">${escapeHtml(localize("EAP.Current"))}</span> <strong data-eap-current>${formatTime(current)}</strong></span><span><span class="eap-progress-caption">${escapeHtml(localize("EAP.Duration"))}</span> <strong data-eap-progress-end>${formatTime(duration)}</strong></span></div>
+        <div class="eap-timeline" data-eap-timeline>
+          <div class="eap-segment-highlight eap-intro-segment" aria-hidden="true"></div><div class="eap-segment-highlight eap-loop-segment" aria-hidden="true"></div>
+          <span class="eap-range-marker eap-intro-marker-start" aria-hidden="true"></span><span class="eap-range-marker eap-intro-marker-end" aria-hidden="true"></span>
+          <span class="eap-range-marker eap-loop-marker-start" aria-hidden="true"></span><span class="eap-range-marker eap-loop-marker-end" aria-hidden="true"></span>
+          <span class="eap-range-marker eap-base-marker-start" aria-hidden="true"></span>
           <input type="range" data-eap-progress min="0" max="${duration}" step="0.01" value="${clamp(current, 0, duration)}" ${canPlay ? "" : "disabled"}>
         </div>
-        <div class="eap-marker-labels">
-          <span data-eap-marker-start-label>${escapeHtml(localize("EAP.Start"))} ${formatTime(config.start)}</span>
-          <span data-eap-marker-end-label>${escapeHtml(localize("EAP.End"))} ${formatTime(endValue)}</span>
-        </div>
+        <div class="eap-marker-labels"><span data-eap-marker-start-label></span><span data-eap-marker-end-label></span></div>
       </div>
-
-      <div class="eap-footer-actions">
-        <button type="button" class="eap-reset" data-eap-action="reset">
-          <i class="fa-solid fa-rotate-left"></i> ${escapeHtml(localize("EAP.ResetTrack"))}
-        </button>
-      </div>
+      <div class="eap-footer-actions"><button type="button" class="eap-reset" data-eap-action="reset"><i class="fa-solid fa-rotate-left"></i> ${escapeHtml(localize("EAP.ResetTrack"))}</button></div>
     `;
   }
+
 }
 
 function changedConfigKeys(previous, next) {
   const keys = new Set();
-  for (const key of ["fullTrack", "start", "end", "loop", "fadeIn", "fadeOut"]) {
-    if (!sameValue(previous?.[key], next?.[key])) keys.add(key);
-  }
+  for (const key of CONFIG_KEYS) if (!sameValue(previous?.[key], next?.[key])) keys.add(key);
   return keys;
 }
 
 function configsEqual(a, b) {
   if (!a || !b) return false;
-  return ["fullTrack", "start", "end", "loop", "fadeIn", "fadeOut"].every(key => sameValue(a[key], b[key]));
+  return CONFIG_KEYS.every(key => sameValue(a[key], b[key]));
 }
 
 function sameValue(a, b) {
   if (typeof a === "boolean" || typeof b === "boolean") return Boolean(a) === Boolean(b);
-  if (a === null || a === undefined || b === null || b === undefined) return (a ?? null) === (b ?? null);
-  const an = Number(a);
-  const bn = Number(b);
+  if (a == null || b == null) return (a ?? null) === (b ?? null);
+  const an = Number(a), bn = Number(b);
   return Number.isFinite(an) && Number.isFinite(bn) ? Math.abs(an - bn) < 0.0005 : String(a) === String(b);
 }
 
@@ -981,6 +864,37 @@ function parseDecimal(value) {
   return Number.isFinite(number) ? number : NaN;
 }
 
+/** Accept seconds, MM:SS(.mmm), or HH:MM:SS(.mmm); decimals can use comma. */
+export function parseTime(value) {
+  const text = String(value ?? "").trim().replace(",", ".");
+  const parts = text.split(":");
+  if (parts.length === 1) return parseDecimal(text);
+  if (parts.length !== 2 && parts.length !== 3) return NaN;
+  if (parts.some(part => !part || !/^\d+(?:\.\d+)?$/.test(part))) return NaN;
+  if (parts.slice(0, -1).some(part => !/^\d+$/.test(part))) return NaN;
+  const numbers = parts.map(Number);
+  const seconds = numbers.at(-1);
+  if (seconds >= 60) return NaN;
+  if (parts.length === 2) return numbers[0] * 60 + seconds;
+  if (numbers[1] >= 60) return NaN;
+  return numbers[0] * 3600 + numbers[1] * 60 + seconds;
+}
+
+/** Snap gap seeks to the nearest playable segment; no hidden gap playback. */
+export function allowedSeekOffset(config, duration, requested) {
+  const range = effectiveRange(config, duration);
+  if (!range.valid) return Math.max(0, Number(requested) || 0);
+  const at = clamp(Number(requested), range.seekMin, range.seekMax);
+  if (!range.introEnabled || !range.loopEnabled) return at;
+  const inIntro = at >= range.introStart && at <= range.introEnd;
+  const inLoop = at >= range.loopStart && at <= range.loopEnd;
+  if (inIntro || inLoop) return at;
+  // Skip a silent gap between Intro End and a later Loop Start.
+  if (range.introEnd < range.loopStart && at > range.introEnd && at < range.loopStart) return range.loopStart;
+  const endpoints = [range.introStart, range.introEnd, range.loopStart, range.loopEnd];
+  return endpoints.reduce((best, point) => Math.abs(point-at) < Math.abs(best-at) ? point : best, endpoints[0]);
+}
+
 function insertAtSelection(input, text) {
   const start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
   const end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
@@ -988,10 +902,12 @@ function insertAtSelection(input, text) {
 }
 
 export function formatTime(seconds) {
-  const safe = Math.max(0, Number(seconds) || 0);
-  const minutes = Math.floor(safe / 60);
-  const remainder = safe - minutes * 60;
-  const whole = Math.floor(remainder);
-  const millis = Math.floor((remainder - whole) * 1000);
-  return `${String(minutes).padStart(2, "0")}:${String(whole).padStart(2, "0")}.${String(millis).padStart(3, "0")}`;
+  const totalMs = Math.max(0, Math.round((Number(seconds) || 0) * 1000));
+  const hours = Math.floor(totalMs / 3600000);
+  const minutes = Math.floor((totalMs % 3600000) / 60000);
+  const secs = Math.floor((totalMs % 60000) / 1000);
+  const millis = totalMs % 1000;
+  const pad = n => String(n).padStart(2, "0");
+  const prefix = hours ? `${pad(hours)}:${pad(minutes)}` : pad(Math.floor(totalMs / 60000));
+  return `${prefix}:${pad(secs)}.${String(millis).padStart(3, "0")}`;
 }

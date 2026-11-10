@@ -1,5 +1,5 @@
 import {MODULE_ID, SOCKET_CHANNEL, SOCKET_TYPES} from "./constants.js";
-import {clamp, effectiveRange, readPlaybackConfig} from "./config.js";
+import {clamp, effectiveRange, readPlaybackConfig, sourceDuration} from "./config.js";
 
 function sessionKey(playlistId, soundId) {
   return `${playlistId}.${soundId}`;
@@ -12,8 +12,10 @@ function nowId() {
 
 
 function requiresEnhancedPolicy(config) {
-  return config?.fullTrack === false
-    || Boolean(config?.loop)
+  return Boolean(config?.introEnabled)
+    || Boolean(config?.loopEnabled)
+    || Boolean(config?.repeat)
+    || Number(config?.start) > 0
     || Number(config?.fadeIn) > 0
     || Number(config?.fadeOut) > 0;
 }
@@ -145,6 +147,13 @@ export class PlaybackRuntime {
       seekMin: Number(session.seekMin) || 0,
       seekMax: Number(session.seekMax) || 0,
       introLoop: Boolean(session.introLoop),
+      introEnabled: Boolean(session.introEnabled),
+      introStart: Number(session.introStart) || 0,
+      introEnd: Number(session.introEnd) || 0,
+      firstPassEnd: Number(session.firstPassEnd) || 0,
+      loopEnabled: Boolean(session.loopEnabled),
+      repeat: Boolean(session.repeat),
+      phase: session.phase,
       offset: clamp(Number(session.offset), Number(session.seekMin) || 0, Number(session.seekMax) || 0),
       loop: Boolean(session.loop),
       fadeIn: Number(session.fadeIn) || 0,
@@ -170,7 +179,11 @@ export class PlaybackRuntime {
 
     const key = sessionKey(playlist.id, playlistSound.id);
     const existing = this.getSession(playlist.id, playlistSound.id);
-    const offset = clamp(Number(requestedOffset), range.seekMin, range.seekMax);
+    let offset = clamp(Number(requestedOffset), range.seekMin, range.seekMax);
+    const phase = phaseForOffset(range, offset);
+    // Gaps between independent intro and loop segments are never audible.
+    if (range.introEnabled && range.loopEnabled && offset > range.introEnd && offset < range.loopStart) offset = range.loopStart;
+    if (range.introEnabled && range.loopEnabled && offset < range.introStart && offset >= range.loopStart) offset = range.loopStart;
 
     // Do not restart a paused track when moving the timeline. The playlist
     // document remains playing=true while the local native Sound is stopped;
@@ -187,6 +200,7 @@ export class PlaybackRuntime {
       range,
       duration,
       offset,
+      phase,
       paused: seekingWhilePaused
     });
 
@@ -214,6 +228,7 @@ export class PlaybackRuntime {
     const offset = repositionToStart
       ? range.start
       : clamp(current, range.seekMin, range.seekMax);
+    const phase = repositionToStart ? range.firstPhase : phaseForOffset(range, offset);
 
     const command = this.#policyCommand({
       type: SOCKET_TYPES.RECONFIGURE,
@@ -224,6 +239,7 @@ export class PlaybackRuntime {
       range,
       duration,
       offset,
+      phase,
       paused: Boolean(existing.paused)
     });
 
@@ -248,7 +264,7 @@ export class PlaybackRuntime {
       if (!playlistSound || (!playlistSound.playing && !nativeSound?.playing)) return null;
 
       try { await playlistSound.load(); } catch (_error) { /* use loaded metadata if available */ }
-      const duration = Number(playlistSound.sound?.duration) || 0;
+      const duration = sourceDuration(playlistSound.sound);
       const range = effectiveRange(readPlaybackConfig(playlistSound), duration);
       if (!range.valid) return null;
 
@@ -269,6 +285,13 @@ export class PlaybackRuntime {
         seekMin: range.seekMin,
         seekMax: range.seekMax,
         introLoop: range.introLoop,
+        introEnabled: range.introEnabled,
+        introStart: range.introStart,
+        introEnd: range.introEnd,
+        firstPassEnd: range.firstPassEnd,
+        loopEnabled: range.loopEnabled,
+        repeat: range.repeat,
+        phase: phaseForOffset(range, offset),
         offset,
         loop: Boolean(range.loop),
         fadeIn: Number(range.fadeIn) || 0,
@@ -385,7 +408,7 @@ export class PlaybackRuntime {
     }
 
     if (!playlistSound.playing) return;
-    const duration = Number(playlistSound.sound?.duration) || 0;
+    const duration = sourceDuration(playlistSound.sound);
     const range = effectiveRange(config, duration);
     if (!range.valid) {
       console.warn(`${MODULE_ID} | Saved policy is invalid for ${playlistSound.name}; leaving native playback untouched.`);
@@ -411,6 +434,13 @@ export class PlaybackRuntime {
       seekMin: range.seekMin,
       seekMax: range.seekMax,
       introLoop: range.introLoop,
+      introEnabled: range.introEnabled,
+      introStart: range.introStart,
+      introEnd: range.introEnd,
+      firstPassEnd: range.firstPassEnd,
+      loopEnabled: range.loopEnabled,
+      repeat: range.repeat,
+      phase: range.firstPhase,
       offset: range.start,
       loop: Boolean(range.loop),
       fadeIn: Number(range.fadeIn) || 0,
@@ -451,7 +481,7 @@ export class PlaybackRuntime {
     this.#onSessionChanged();
   }
 
-  #policyCommand({type, revision, sessionId, playlist, playlistSound, range, duration, offset, paused}) {
+  #policyCommand({type, revision, sessionId, playlist, playlistSound, range, duration, offset, phase = range.firstPhase, paused}) {
     return {
       type,
       revision,
@@ -468,6 +498,13 @@ export class PlaybackRuntime {
       seekMin: range.seekMin,
       seekMax: range.seekMax,
       introLoop: range.introLoop,
+      introEnabled: range.introEnabled,
+      introStart: range.introStart,
+      introEnd: range.introEnd,
+      firstPassEnd: range.firstPassEnd,
+      loopEnabled: range.loopEnabled,
+      repeat: range.repeat,
+      phase,
       offset: clamp(Number(offset), range.seekMin, range.seekMax),
       loop: Boolean(range.loop),
       fadeIn: Number(range.fadeIn) || 0,
@@ -556,6 +593,16 @@ export class PlaybackRuntime {
     if (trackDuration <= 0 || rangeEnd <= playbackStart || rangeEnd > trackDuration) return;
     if (command.loop && (loopStart >= loopEnd || loopEnd > trackDuration)) return;
 
+    const introEnabled = Boolean(command.introEnabled);
+    const loopEnabled = Boolean(command.loopEnabled);
+    const repeat = Boolean(command.repeat);
+    const introStart = Math.max(0, Number(command.introStart) || 0);
+    const introEnd = Math.max(introStart, Number(command.introEnd) || rangeEnd);
+    const firstPassEnd = Math.max(introEnd, Number(command.firstPassEnd) || introEnd);
+    if (introEnabled && (introEnd <= introStart || introEnd > trackDuration || firstPassEnd > trackDuration)) return;
+    const firstPhase = introEnabled ? "intro" : ((loopEnabled || repeat) ? "loop" : "single");
+    const phase = ["intro", "loop", "single"].includes(command.phase) ? command.phase : firstPhase;
+
     const prior = this.#sessions.get(key);
     if (prior) {
       prior.active = false;
@@ -573,6 +620,7 @@ export class PlaybackRuntime {
       seekMin,
       seekMax,
       introLoop: Boolean(command.introLoop),
+      introEnabled, introStart, introEnd, firstPassEnd, loopEnabled, repeat, phase,
       trackDuration,
       offset: clamp(Number(command.offset), seekMin, seekMax),
       fadeInApplied: command.type === SOCKET_TYPES.SEEK || Boolean(command.resume),
@@ -680,9 +728,10 @@ export class PlaybackRuntime {
   }
 
   /**
-   * Every cycle works in absolute source seconds. The first pass starts at
-   * playbackStart (0 for Intro+Loop); subsequent passes start at loopStart.
-   * Only a buffer source can use sample-accurate native region looping.
+   * Every playback uses the actual, complete native Sound. Do NOT pass
+   * Sound.play({duration}) or native region loop bounds: on V13 they can leak
+   * shortened timing into Foundry's Currently Playing UI. Sound.schedule
+   * marks segment endings while the audio source remains full-length.
    */
   async #playCycle(session, offset, generation, revision) {
     const key = sessionKey(session.playlistId, session.soundId);
@@ -695,80 +744,95 @@ export class PlaybackRuntime {
 
     session.cycleSerial = (Number(session.cycleSerial) || 0) + 1;
     const cycleSerial = session.cycleSerial;
-    const start = clamp(Number(offset), session.seekMin, session.seekMax);
-    const remaining = Math.max(0, session.rangeEnd - start);
-    if (remaining <= 0.001) {
-      if (session.loop) {
-        // Do not recursively replay an End-bound seek in the same tick.
-        return this.#playCycle(session, session.loopStart, generation, revision);
-      }
-      return this.#finishSession(session, revision);
-    }
+    const phase = session.phase;
+    const phaseEnd = phase === "intro" ? session.firstPassEnd
+      : phase === "loop" ? session.loopEnd : session.rangeEnd;
+    const phaseStart = phase === "intro" ? session.introStart
+      : phase === "loop" ? session.loopStart : session.rangeStart;
+    const start = clamp(Number(offset), phaseStart, phaseEnd);
+    const remaining = Math.max(0, phaseEnd - start);
 
-    const initialFade = !session.fadeInApplied;
-    session.fadeInApplied = true;
-    const fadeInMs = initialFade ? Math.max(0, Math.min(Number(session.fadeIn) || 0, remaining) * 1000) : 0;
-    // A loop must never fade out at its seam; Fade Out is for terminal ends.
-    const fadeOutSec = session.loop ? 0 : Math.max(0, Math.min(Number(session.fadeOut) || 0, Math.max(0, remaining - fadeInMs / 1000)));
-    const targetVolume = Number.isFinite(Number(playlistSound.volume)) ? Number(playlistSound.volume) : 1;
-    const canUseNativeLoop = Boolean(session.loop && nativeSound.isBuffer);
-
-    const onended = () => {
-      if (!session.active || session.paused || generation !== session.generation || cycleSerial !== session.cycleSerial || !this.#isCurrent(key, revision)) return;
-      if (canUseNativeLoop) return;
-      if (session.loop) {
-        // Streamed files use the same native Sound, but start subsequent
-        // iterations at loopStart instead of repeating the introduction.
+    const current = () => session.active && !session.paused
+      && generation === session.generation && cycleSerial === session.cycleSerial
+      && this.#isCurrent(key, revision);
+    const nextSegment = () => {
+      if (!current()) return;
+      // One introductory segment, then the loop starts at its independent
+      // boundary; a gap between Intro End and Loop Start is skipped.
+      if (phase === "intro" && session.loopEnabled) {
+        session.phase = "loop";
+        void this.#playCycle(session, session.loopStart, generation, revision);
+      } else if (session.loop) {
+        session.phase = "loop";
         void this.#playCycle(session, session.loopStart, generation, revision);
       } else {
         void this.#finishSession(session, revision);
       }
     };
 
-    const options = {offset: start, volume: targetVolume, fade: fadeInMs, onended};
-    if (canUseNativeLoop) {
-      options.loop = true;
-      options.loopStart = session.loopStart;
-      options.loopEnd = session.loopEnd;
-    } else {
-      options.duration = remaining;
-      options.loop = false;
-    }
-
-    // A streamed cycle can end with an internal paused position. Always clear
-    // it before starting an absolute offset, including a loop fallback.
-    if (nativeSound.playing || Number(nativeSound.pausedTime) > 0) {
-      try { await nativeSound.stop(); }
-      catch (error) { console.debug(`${MODULE_ID} | Stop before next absolute cycle failed`, error); }
-    }
-    if (!session.active || session.paused || generation !== session.generation || cycleSerial !== session.cycleSerial || !this.#isCurrent(key, revision)) return;
-
-    // Begin the expected-time clock before play(), so a concurrent native
-    // sync/reconcile cannot mistake an intro for the loop segment.
-    session.offset = start;
-    session.lastAppliedAt = Date.now();
-    try { await nativeSound.play(options); }
-    catch (error) {
-      console.error(`${MODULE_ID} | Enhanced Sound.play failed`, error);
+    if (remaining <= 0.001) {
+      // Do not recursively re-enter on an exact End seek inside one tick.
+      queueMicrotask(nextSegment);
       return;
     }
 
-    if (!session.active || session.paused || generation !== session.generation || cycleSerial !== session.cycleSerial || !this.#isCurrent(key, revision)) {
+    const firstFade = !session.fadeInApplied;
+    session.fadeInApplied = true;
+    const fadeInMs = firstFade ? Math.max(0, Math.min(Number(session.fadeIn) || 0, remaining) * 1000) : 0;
+    const fadeOutSec = session.loop ? 0
+      : Math.max(0, Math.min(Number(session.fadeOut) || 0, Math.max(0, remaining - fadeInMs / 1000)));
+    const targetVolume = Number.isFinite(Number(playlistSound.volume)) ? Number(playlistSound.volume) : 1;
+
+    // The previous source is always terminated before any absolute start.
+    if (nativeSound.playing || Number(nativeSound.pausedTime) > 0) {
+      try { await nativeSound.stop(); }
+      catch (error) { console.debug(`${MODULE_ID} | Native stop before absolute start failed`, error); }
+    }
+    if (!current()) return;
+
+    session.offset = start;
+    session.lastAppliedAt = Date.now();
+    try {
+      // loop:false is explicit: a previous mode must not leave native looping
+      // enabled. Omitting duration/loopStart/loopEnd preserves full metadata.
+      await nativeSound.play({offset: start, volume: targetVolume, fade: fadeInMs, loop: false, onended: nextSegment});
+    } catch (error) {
+      console.error(`${MODULE_ID} | Enhanced Sound.play failed`, error);
+      return;
+    }
+    if (!current()) {
       if (nativeSound.playing || Number(nativeSound.pausedTime) > 0) {
-        try { await nativeSound.stop(); } catch (_error) { /* newer command will reconcile */ }
+        try { await nativeSound.stop(); } catch (_error) { /* newer command owns it */ }
       }
       return;
     }
 
-    if (fadeOutSec > 0 && !canUseNativeLoop) {
-      const fadeAt = session.rangeEnd - fadeOutSec;
+    // Native audio-time scheduling handles a custom End without truncating
+    // the source's own duration. Use the onended callback only as fallback at
+    // the natural file end; cycleSerial prevents duplicate transitions.
+    try {
+      const handle = nativeSound.schedule(() => {
+        session.scheduleHandles.delete(handle);
+        nextSegment();
+      }, phaseEnd);
+      session.scheduleHandles.add(handle);
+      // Handle may reject if canceled on Stop/Seek; don't surface unhandled
+      // rejections from Foundry's scheduling promise.
+      void Promise.resolve(handle).catch(() => {});
+    } catch (error) {
+      console.warn(`${MODULE_ID} | Could not schedule segment boundary`, error);
+    }
+
+    if (fadeOutSec > 0) {
+      const fadeAt = phaseEnd - fadeOutSec;
       try {
         const handle = nativeSound.schedule(() => {
           session.scheduleHandles.delete(handle);
-          if (!session.active || session.paused || generation !== session.generation || cycleSerial !== session.cycleSerial || !this.#isCurrent(key, revision)) return;
+          if (!current()) return;
           void nativeSound.fade(0, {duration: fadeOutSec * 1000, from: targetVolume, type: "linear"});
         }, fadeAt);
         session.scheduleHandles.add(handle);
+        void Promise.resolve(handle).catch(() => {});
       } catch (error) {
         console.debug(`${MODULE_ID} | Could not schedule fade-out`, error);
       }
@@ -783,6 +847,9 @@ export class PlaybackRuntime {
     session.active = false;
     session.paused = false;
     this.#sessions.delete(key);
+    // End is an EAP boundary, not the media's actual end. Stop the source on
+    // every connected client before the GM advances the native Playlist.
+    await this.#stopNative(session);
     this.#onSessionChanged();
 
     if (game.user?.isGM && game.user.id === session.controllerUserId) {
@@ -851,9 +918,11 @@ export class PlaybackRuntime {
   }
 
   #expectedCurrentTime(session) {
-    const firstStart = Number(session.playbackStart) || 0;
-    const end = Number(session.rangeEnd) || firstStart;
-    const base = clamp(Number(session.offset), session.seekMin, session.seekMax);
+    const firstStart = session.phase === "intro" ? session.introStart
+      : session.phase === "loop" ? session.loopStart : session.rangeStart;
+    const end = session.phase === "intro" ? session.firstPassEnd
+      : session.phase === "loop" ? session.loopEnd : session.rangeEnd;
+    const base = clamp(Number(session.offset), firstStart, end);
     if (!session.lastAppliedAt || session.paused) return base;
     const elapsed = Math.max(0, (Date.now() - Number(session.lastAppliedAt)) / 1000);
     if (!session.loop) return clamp(base + elapsed, firstStart, end);
@@ -890,4 +959,10 @@ export function resolveSound(playlistId, soundId) {
   const playlist = game.playlists?.get(playlistId);
   const sound = playlist?.sounds?.get(soundId);
   return playlist && sound ? {playlist, sound} : null;
+}
+
+/** Select the initial segment for a user's absolute timeline seek. */
+function phaseForOffset(range, offset) {
+  if (range.introEnabled && (!range.loopEnabled || (offset >= range.introStart && offset < range.introEnd))) return "intro";
+  return range.loop ? "loop" : "single";
 }

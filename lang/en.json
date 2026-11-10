@@ -16,7 +16,7 @@
   "EAP.Current": "Current",
   "EAP.Duration": "Duration",
   "EAP.ResetTrack": "Reset Track",
-  "EAP.InvalidRangeHint": "The saved custom range is outside this track duration. Adjust Start/End or reset the track.",
+  "EAP.InvalidRangeHint": "Invalid time interval. Check the enabled Intro/Loop Start and End times against the full file duration.",
   "EAP.Status.Idle": "Idle",
   "EAP.Status.Native": "Native playback",
   "EAP.Status.Enhanced": "Enhanced playback",
@@ -46,5 +46,11 @@
   "EAP.IntroOnce": "Intro (once)",
   "EAP.LoopRepeat": "Loop (repeat)",
   "EAP.RangeOnce": "Range (once)",
-  "EAP.FullOnce": "Full track (once)"
+  "EAP.FullOnce": "Full track (once)",
+  "EAP.IntroToggle": "Intro — Play Once",
+  "EAP.LoopToggle": "Continuous Loop",
+  "EAP.IntroStart": "Intro Start",
+  "EAP.IntroEnd": "Intro End",
+  "EAP.StartPlaybackAt": "Start Playback At",
+  "EAP.RepeatTrack": "Repeat Track"
 }

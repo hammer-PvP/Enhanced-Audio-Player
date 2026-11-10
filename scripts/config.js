@@ -10,75 +10,91 @@ export function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
-/**
- * Sanitize values for persistence only.
- *
- * IMPORTANT: this function deliberately does not clamp Start/End against the
- * currently observed Sound duration. Sound duration is runtime metadata and can
- * be transient while Foundry replaces/restarts a native Sound. Persisted user
- * intent must never be rewritten because of transient playback state.
- */
-export function sanitizePlaybackConfig(raw = {}) {
-  const fullTrack = raw.fullTrack !== false;
-  const start = Math.max(0, finiteNumber(raw.start, DEFAULT_PLAYBACK_CONFIG.start));
-
-  let end = raw.end;
-  if (end === "" || end === undefined || end === null) end = null;
-  else end = Math.max(0, finiteNumber(end, 0));
-
-  return {
-    fullTrack,
-    start,
-    end,
-    loop: Boolean(raw.loop),
-    fadeIn: Math.max(0, finiteNumber(raw.fadeIn, DEFAULT_PLAYBACK_CONFIG.fadeIn)),
-    fadeOut: Math.max(0, finiteNumber(raw.fadeOut, DEFAULT_PLAYBACK_CONFIG.fadeOut))
-  };
+function safeTime(value, fallback = 0) {
+  if (value === "" || value === undefined || value === null) return fallback;
+  return Math.max(0, finiteNumber(value, fallback ?? 0));
 }
 
 /**
- * Resolve the effective runtime range without mutating the stored configuration.
+ * v2 stores independent Intro and Loop segments. Convert v0.1.3 flags *in
+ * memory* to their exact equivalent; no destructive background migration.
+ * The next explicit OK persists v2 on that PlaylistSound occurrence only.
  */
-/**
- * Resolve the four playback policies without rewriting persisted flags.
- * start/end describe the FIRST pass. loopStart/loopEnd describe repeats.
- * Seek bounds are independent from the visual 0->file-duration timeline.
- */
-export function effectiveRange(config, duration = 0) {
-  const stored = sanitizePlaybackConfig(config);
-  const safeDuration = Math.max(0, finiteNumber(duration, 0));
-  const introLoop = stored.fullTrack && stored.loop;
-  const fullPlayback = stored.fullTrack && !stored.loop;
-
-  if (fullPlayback) {
-    const fadeIn = Math.min(stored.fadeIn, safeDuration);
+export function sanitizePlaybackConfig(raw = {}) {
+  if (!raw || typeof raw !== "object") raw = {};
+  if (raw.schemaVersion !== 2 && !Object.hasOwn(raw, "introEnabled") && !Object.hasOwn(raw, "loopEnabled")) {
+    const fullTrack = raw.fullTrack !== false;
+    const loop = Boolean(raw.loop);
+    const start = safeTime(raw.start, 0);
+    const end = raw.end === "" || raw.end == null ? null : safeTime(raw.end);
+    // Legacy intro+loop always played 0→End, then Start→End.
+    // Legacy range once is represented by an Intro-only segment.
     return {
-      valid: safeDuration > 0, start: 0, end: safeDuration,
-      playbackStart: 0, loopStart: 0, loopEnd: safeDuration,
-      seekMin: 0, seekMax: safeDuration,
-      length: safeDuration, loop: false, introLoop: false,
-      fadeIn,
-      fadeOut: Math.min(stored.fadeOut, Math.max(0, safeDuration - fadeIn))
+      schemaVersion: 2,
+      start: 0,
+      repeat: false,
+      introEnabled: (!fullTrack && !loop) || (fullTrack && loop && start > 0),
+      introStart: fullTrack && loop ? 0 : start,
+      introEnd: fullTrack && loop ? start : end,
+      loopEnabled: loop,
+      loopStart: start,
+      loopEnd: end,
+      fadeIn: safeTime(raw.fadeIn, 0),
+      fadeOut: safeTime(raw.fadeOut, 0)
     };
   }
 
-  const requestedEnd = stored.end ?? safeDuration;
-  const valid = safeDuration > 0
-    && stored.start >= 0
-    && requestedEnd > stored.start
-    && stored.start < safeDuration
-    && requestedEnd <= safeDuration;
-  const playbackStart = introLoop ? 0 : stored.start;
-  const length = Math.max(0, requestedEnd - playbackStart);
-  const fadeIn = Math.min(stored.fadeIn, length);
   return {
-    valid, start: playbackStart, end: requestedEnd,
-    playbackStart, loopStart: stored.start, loopEnd: requestedEnd,
-    seekMin: playbackStart, seekMax: requestedEnd,
-    length, loop: Boolean(stored.loop), introLoop,
+    schemaVersion: 2,
+    start: safeTime(raw.start, 0),
+    repeat: Boolean(raw.repeat),
+    introEnabled: Boolean(raw.introEnabled),
+    introStart: safeTime(raw.introStart, 0),
+    introEnd: raw.introEnd === "" || raw.introEnd == null ? null : safeTime(raw.introEnd),
+    loopEnabled: Boolean(raw.loopEnabled),
+    loopStart: safeTime(raw.loopStart, 0),
+    loopEnd: raw.loopEnd === "" || raw.loopEnd == null ? null : safeTime(raw.loopEnd),
+    fadeIn: safeTime(raw.fadeIn, 0),
+    fadeOut: safeTime(raw.fadeOut, 0)
+  };
+}
+
+/** Resolve playback segments WITHOUT ever mutating stored timings or media metadata. */
+export function effectiveRange(config, duration = 0) {
+  const c = sanitizePlaybackConfig(config);
+  const d = Math.max(0, finiteNumber(duration, 0));
+  const introEnabled = c.introEnabled;
+  const loopEnabled = c.loopEnabled;
+  const repeat = !introEnabled && !loopEnabled && c.repeat;
+  const introStart = c.introStart;
+  const introEnd = c.introEnd ?? d;
+  const loopStart = loopEnabled ? c.loopStart : (repeat ? c.start : 0);
+  const loopEnd = loopEnabled ? (c.loopEnd ?? d) : d;
+  const start = introEnabled ? introStart : (loopEnabled ? loopStart : c.start);
+  const end = introEnabled ? introEnd : (loopEnabled ? loopEnd : d);
+  const validSegment = (a, b) => a >= 0 && a < d && b > a && b <= d;
+  const valid = d > 0
+    && (introEnabled ? validSegment(introStart, introEnd) : true)
+    && (loopEnabled ? validSegment(loopStart, loopEnd) : true)
+    && ((!introEnabled && !loopEnabled) ? validSegment(c.start, d) : true);
+  const seekMin = introEnabled && loopEnabled ? Math.min(introStart, loopStart) : start;
+  const seekMax = introEnabled && loopEnabled ? Math.max(introEnd, loopEnd) : end;
+  const firstLength = Math.max(0, end - start);
+  const fadeIn = Math.min(c.fadeIn, firstLength);
+  const looping = loopEnabled || repeat;
+  return {
+    valid, start, end, playbackStart: start,
+    rangeStart: start, rangeEnd: end, length: firstLength,
+    introEnabled, introStart, introEnd,
+    // Contiguous intro→loop should run continuously until Loop End before
+    // the first jump, avoiding an unnecessary seam at the Intro boundary.
+    firstPassEnd: introEnabled && loopEnabled && Math.abs(introEnd - loopStart) < 0.001 ? loopEnd : end,
+    loopEnabled, loopStart, loopEnd,
+    repeat, loop: looping, introLoop: introEnabled && loopEnabled,
+    firstPhase: introEnabled ? "intro" : (looping ? "loop" : "single"),
+    seekMin, seekMax,
     fadeIn,
-    // A repeating loop must not fade out at its seam.
-    fadeOut: stored.loop ? 0 : Math.min(stored.fadeOut, Math.max(0, length - fadeIn))
+    fadeOut: looping ? 0 : Math.min(c.fadeOut, Math.max(0, firstLength - fadeIn))
   };
 }
 
@@ -96,4 +112,12 @@ export async function writePlaybackConfig(playlistSound, config) {
 export async function resetPlaybackConfig(playlistSound) {
   await playlistSound.unsetFlag(MODULE_ID, FLAG_KEY);
   return {...DEFAULT_PLAYBACK_CONFIG};
+}
+
+/** Prefer immutable source metadata over transient playback-duration getters. */
+export function sourceDuration(nativeSound) {
+  const source = Number(nativeSound?.buffer?.duration ?? nativeSound?.element?.duration);
+  if (Number.isFinite(source) && source > 0) return source;
+  const reported = Number(nativeSound?.duration);
+  return Number.isFinite(reported) && reported > 0 ? reported : 0;
 }
