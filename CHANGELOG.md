@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.5
+
+Millisecond time-mask UX, draggable Intro/Loop editing rails, and an exact-end validation fix.
+
+- Changed time fields (Intro, Loop, Start Playback At) to a right-to-left digit mask: typing `5000` enters `00:05.000`; Backspace shifts right, Delete resets. Numpad editing continues to consume keystrokes without leaking shortcuts into Foundry or committing before OK. Formatted `MM:SS.mmm` timestamps can still be pasted. Fade In/Out remain seconds.
+- Added two thin, independent draggable timeline rails with Intro Start/End and Loop Start/End handles. Only enabled segments show their rails. Their time scale matches the complete source track, and dragging updates the corresponding editor fields live without altering playback, seeking, or saving flags.
+- Added fine adjustments with Shift+drag and keyboard arrows (1 ms, or 10 ms with Shift). Each segment keeps its own Start before End while different segments can coincide, overlap, or have gaps.
+- Fixed the validation failure when a typed End exactly matches the **displayed** full-track duration rounded to milliseconds (e.g. `28.078` for a `28.0779` second file). Use the exact native source duration for effective playback boundaries while leaving stored user times unchanged.
+- Kept the existing schema-v2 flags, explicit OK commit, per-PlaylistSound Reset, native full-duration playback, Play/Pause/Resume/Stop, paused seek, auto-follow, Next and V13.341+/V14 adapter unchanged. No new audio engine or playlist database.
+
+
 ## 0.1.4
 
 Independent Intro/Loop UI, friendly time entry, and full-length native audio regression fix.

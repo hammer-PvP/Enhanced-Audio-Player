@@ -67,9 +67,17 @@ export function effectiveRange(config, duration = 0) {
   const loopEnabled = c.loopEnabled;
   const repeat = !introEnabled && !loopEnabled && c.repeat;
   const introStart = c.introStart;
-  const introEnd = c.introEnd ?? d;
+  // Foundry's source duration can have sub-millisecond precision while the
+  // editor displays MM:SS.mmm. Accept an End matching the DISPLAYED final
+  // millisecond and use the exact source duration only for playback.
+  // The user's saved flag remains unchanged (e.g. 28.078, not 28.0779).
+  const sourceEnd = value => {
+    if (value == null) return d;
+    return Math.round(value * 1000) === Math.round(d * 1000) ? d : value;
+  };
+  const introEnd = sourceEnd(c.introEnd);
   const loopStart = loopEnabled ? c.loopStart : (repeat ? c.start : 0);
-  const loopEnd = loopEnabled ? (c.loopEnd ?? d) : d;
+  const loopEnd = loopEnabled ? sourceEnd(c.loopEnd) : d;
   const start = introEnabled ? introStart : (loopEnabled ? loopStart : c.start);
   const end = introEnabled ? introEnd : (loopEnabled ? loopEnd : d);
   const validSegment = (a, b) => a >= 0 && a < d && b > a && b <= d;

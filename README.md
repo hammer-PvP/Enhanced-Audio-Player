@@ -2,7 +2,7 @@
 
 Enhanced Audio Player is a lightweight, system-agnostic Foundry VTT module that places a compact GM-only playback controller below the native Playlists directory. All audio remains on Foundry's native `PlaylistSound` / `Sound` engine. No independent playlists or audio players are created.
 
-## Playback configuration (v0.1.4)
+## Playback configuration (v0.1.5)
 
 Select a sound **inside an expanded native playlist**. The module shows two optional checkboxes. **Their time fields appear only when enabled**:
 
@@ -13,9 +13,13 @@ Select a sound **inside an expanded native playlist**. The module shows two opti
 
 `Continuous Loop` already means infinite repetition. `Repeat Track` is shown only when neither Intro nor Continuous Loop is selected.
 
-**Time entry:** write `77`, `1:17`, `1:17.250`, `2:35,5`, or `01:02:03.005`. The display uses `MM:SS.mmm` (or `HH:MM:SS.mmm` for longer audio); internally the times are stored as seconds. Fade In / Fade Out remain seconds.
+**Time entry (v0.1.5):** Intro, Loop and Start Playback At inputs now use a fixed **right-to-left millisecond mask**. Type `5000` to enter `00:05.000`, `77000` for `01:17.000`, or `125500` for `02:05.500`. Backspace removes the rightmost digit; Delete clears the masked value. The numpad works even with Num Lock off. You can also **paste formatted** `1:17`, `1:17.250`, `2:35,5` or `01:02:03.005`. A pasted string of digits is treated as masked milliseconds, like typing the same digits. Fade In / Fade Out remain numeric seconds.
 
-Click **OK** to validate and save the complete draft once. Typing does **not** write flags, rebuild the editor or disturb focus. **Reset Track** removes only this occurrence's Enhanced Audio Player flags, restoring the unconfigured default. Any edits without OK are discarded on track change or native auto-follow.
+**Visual range editing (v0.1.5):** below the full-file seek timeline, each enabled Intro/Loop segment has its own compact editing rail with **two draggable handles**. Drag either handle to update its Start/End text field. They share the full file's time scale, but the two segments remain independent: their ends may coincide, overlap, or have a gap. Hold **Shift while dragging** for finer movement, or focus a handle and use **arrow keys for 1-ms adjustments** (Shift+arrow = 10 ms). Editing handles does **not seek or play audio**.
+
+The displayed rounded final millisecond is accepted as End even when the file's precise underlying duration differs slightly (e.g. `28.0779` seconds displayed as `00:28.078`). The exact source duration is still used to schedule playback, while the saved value is preserved.
+
+Click **OK** to validate and save the complete draft once. Typing and dragging do **not** write flags, rebuild the editor or disturb focus. **Reset Track** removes only this occurrence's Enhanced Audio Player flags, restoring the unconfigured default. Any edits without OK are discarded on track change or native auto-follow.
 
 ## Usage
 

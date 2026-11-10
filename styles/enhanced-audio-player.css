@@ -334,3 +334,17 @@
 .eap-timeline[data-has-loop] .eap-loop-segment { opacity: 0.78; }
 .eap-marker-labels { font-size: 0.72em; align-items: start; }
 .eap-marker-labels > span { max-width: 50%; overflow-wrap: anywhere; }
+
+/* v0.1.5: independent, millisecond-precise editable Intro/Loop rails.
+   Playback slider remains separate and retains its native seek behavior. */
+.eap-editor-lanes { display: grid; gap: 4px; margin-top: 4px; }
+.eap-edit-lane { display: grid; grid-template-columns: 2.6rem minmax(0, 1fr); align-items: center; gap: 0.36rem; min-height: 19px; }
+.eap-edit-label { font-size: 0.75em; opacity: 0.8; line-height: 1; white-space: nowrap; }
+.eap-anchor-rail { --eap-edit-left: 0%; --eap-edit-width: 0%; position: relative; height: 17px; min-width: 0; touch-action: none; }
+.eap-anchor-rail::before { content: ""; position: absolute; left: 0; right: 0; top: 7px; height: 4px; border-radius: 999px; background: var(--color-border-light-2, rgba(140, 150, 164, 0.28)); opacity: 0.6; pointer-events: none; }
+.eap-anchor-fill { position: absolute; top: 6px; left: var(--eap-edit-left); width: var(--eap-edit-width); height: 6px; background: var(--color-warm-2, #d88e3e); border-radius: 999px; pointer-events: none; }
+.eap-edit-lane-loop .eap-anchor-fill { background: var(--color-cool-3, #8e85dd); }
+.eap-anchor { position: absolute; z-index: 2; top: 1px; transform: translateX(-50%); box-sizing: border-box; width: 10px; height: 16px; min-width: 10px; min-height: 16px; padding: 0; margin: 0; border: 1px solid #70451b; border-radius: 3px; background: #f3bc6c; cursor: ew-resize; touch-action: none; box-shadow: 0 0 0 1px rgba(0,0,0,0.45); }
+.eap-edit-lane-loop .eap-anchor { border-color: #5c529c; background: #b7adf3; }
+.eap-anchor:hover, .eap-anchor:focus-visible { outline: 2px solid var(--color-border-highlight, #f0ce72); outline-offset: 2px; z-index: 3; }
+.eap-editor-lanes [hidden] { display: none !important; }

@@ -52,5 +52,7 @@
   "EAP.IntroStart": "Intro Start",
   "EAP.IntroEnd": "Intro End",
   "EAP.StartPlaybackAt": "Start Playback At",
-  "EAP.RepeatTrack": "Repeat Track"
+  "EAP.RepeatTrack": "Repeat Track",
+  "EAP.IntroRail": "Intro",
+  "EAP.LoopRail": "Loop"
 }

@@ -40,6 +40,7 @@ export class EnhancedAudioPlayerUI {
   #dirty = false;
   #transportBusy = false;
   #suppressNextRangeChange = false;
+  #anchorDrag = null;
 
   constructor({selection, runtime}) {
     this.#selection = selection;
@@ -62,6 +63,7 @@ export class EnhancedAudioPlayerUI {
     this.#panel = panel;
     this.#isSeeking = false;
     this.#seekPointerId = null;
+    this.#anchorDrag = null;
 
     if (!this.#boundRoots.has(root)) {
       root.addEventListener("click", event => { void this.#onDirectoryClick(event); });
@@ -144,6 +146,7 @@ export class EnhancedAudioPlayerUI {
     this.#dirty = false;
     this.#isSeeking = false;
     this.#seekPointerId = null;
+    this.#anchorDrag = null;
     this.#highlightSelection();
     void this.renderPanel();
   }
@@ -213,6 +216,7 @@ export class EnhancedAudioPlayerUI {
     this.#highlightSelection(match.row);
     this.#isSeeking = false;
     this.#seekPointerId = null;
+    this.#anchorDrag = null;
     this.#dirty = false;
     void this.renderPanel();
   }
@@ -369,11 +373,13 @@ export class EnhancedAudioPlayerUI {
 
     for (const input of panel.querySelectorAll("[data-eap-config]")) {
       if (!NUMERIC_KEYS.has(input.dataset.eapConfig)) continue;
-      this.#isolateNumericInput(input);
+      this.#isolateNumericInput(input, duration);
       const updateDraft = () => this.#syncDraftVisuals(duration);
       input.addEventListener("input", updateDraft);
       input.addEventListener("change", updateDraft);
     }
+
+    this.#attachRangeAnchors(duration);
 
     const progress = panel.querySelector("[data-eap-progress]");
     progress?.addEventListener("pointerdown", event => {
@@ -425,46 +431,139 @@ export class EnhancedAudioPlayerUI {
     this.#syncDraftVisuals(duration);
   }
 
-  #isolateNumericInput(input) {
+  /** Time fields use a fixed right-to-left millisecond mask. Changes remain
+   *  local until OK, so neither the input node nor its focus is recreated. */
+  #isolateNumericInput(input, duration) {
+    const isTime = TIME_KEYS.has(input.dataset.eapConfig);
     const stop = event => {
       event.stopPropagation();
       event.stopImmediatePropagation();
     };
-
+    const setTime = seconds => {
+      input.value = formatTime(seconds);
+      input.setSelectionRange(input.value.length, input.value.length);
+      input.dispatchEvent(new Event("input", {bubbles: true}));
+    };
+    input.addEventListener("focus", () => { if (isTime) input.select(); });
     input.addEventListener("keydown", event => {
       stop(event);
-
-      const numpadMatch = /^Numpad([0-9])$/.exec(event.code);
-      if (numpadMatch) {
+      const keypad = /^Numpad([0-9])$/.exec(event.code);
+      const digit = keypad?.[1] ?? (/^[0-9]$/.test(event.key) ? event.key : null);
+      if (isTime) {
+        if (digit !== null) {
+          event.preventDefault();
+          const selected = input.selectionStart === 0 && input.selectionEnd === input.value.length;
+          setTime(shiftMaskedTime(input.value, digit, {replace: selected}));
+          return;
+        }
+        if (event.key === "Backspace" || event.key === "Delete") {
+          event.preventDefault();
+          const selected = input.selectionStart === 0 && input.selectionEnd === input.value.length;
+          setTime(event.key === "Delete" || selected ? 0 : shiftMaskedTime(input.value, "backspace"));
+          return;
+        }
+        // Delimiters are automatic. Leave Ctrl+A/C/V/X and keyboard selection
+        // intact; paste is parsed explicitly below.
+        if (event.code === "NumpadDecimal" || event.key === "." || event.key === ",") {
+          event.preventDefault();
+          return;
+        }
+      } else if (keypad) {
         event.preventDefault();
-        insertAtSelection(input, numpadMatch[1]);
+        insertAtSelection(input, digit);
         input.dispatchEvent(new Event("input", {bubbles: true}));
         return;
-      }
-
-      if (event.code === "NumpadDecimal") {
+      } else if (event.code === "NumpadDecimal") {
         event.preventDefault();
         insertAtSelection(input, ".");
         input.dispatchEvent(new Event("input", {bubbles: true}));
         return;
       }
-
-      if (["NumpadAdd", "NumpadSubtract", "NumpadMultiply", "NumpadDivide"].includes(event.code)) {
-        event.preventDefault();
-        return;
-      }
-
-      // Enter, including NumpadEnter, is consumed but never blurs or commits.
-      // The explicit OK button is the only configuration commit boundary.
-      if (event.key === "Enter" || event.code === "NumpadEnter") event.preventDefault();
+      if (["NumpadAdd", "NumpadSubtract", "NumpadMultiply", "NumpadDivide"].includes(event.code)
+          || event.key === "Enter" || event.code === "NumpadEnter") event.preventDefault();
     });
+    if (isTime) {
+      input.addEventListener("paste", event => {
+        stop(event);
+        event.preventDefault();
+        const pasted = event.clipboardData?.getData("text")?.trim() ?? "";
+        const parsed = parsePastedTime(pasted);
+        if (Number.isFinite(parsed) && parsed >= 0) setTime(parsed);
+      });
+      input.addEventListener("drop", event => { stop(event); event.preventDefault(); });
+      input.addEventListener("blur", () => {
+        const parsed = parseTime(input.value);
+        if (Number.isFinite(parsed) && parsed >= 0) input.value = formatTime(parsed);
+      });
+    }
     input.addEventListener("keyup", stop);
     input.addEventListener("keypress", stop);
     input.addEventListener("dblclick", stop);
-    input.addEventListener("wheel", event => {
-      stop(event);
-      event.preventDefault();
-    }, {passive: false});
+    input.addEventListener("wheel", event => { stop(event); event.preventDefault(); }, {passive: false});
+  }
+
+  /** The two editing rails share the *whole file* time scale; their handles
+   *  alter the draft only and never send a playback/seek command. */
+  #attachRangeAnchors(duration) {
+    const panel = this.#panel;
+    if (!panel || !(duration > 0)) return;
+    for (const anchor of panel.querySelectorAll("[data-eap-anchor]")) {
+      const key = anchor.dataset.eapAnchor;
+      const rail = anchor.closest("[data-eap-anchor-rail]");
+      if (!TIME_KEYS.has(key) || !rail) continue;
+      const input = panel.querySelector(`[data-eap-config='${key}']`);
+      if (!input) continue;
+      const applyValue = value => {
+        input.value = formatTime(value);
+        input.dispatchEvent(new Event("input", {bubbles: true}));
+      };
+      const clearDrag = event => {
+        if (!this.#anchorDrag || this.#anchorDrag.key !== key) return;
+        if (event?.pointerId !== undefined && event.pointerId !== this.#anchorDrag.pointerId) return;
+        this.#anchorDrag = null;
+        try { anchor.releasePointerCapture(event.pointerId); } catch (_error) { /* optional */ }
+      };
+      anchor.addEventListener("pointerdown", event => {
+        if (event.button !== 0) return;
+        const draft = this.#readPanelConfig();
+        if (!draft) return;
+        event.preventDefault();
+        event.stopPropagation();
+        anchor.focus({preventScroll: true});
+        this.#anchorDrag = {
+          key, pointerId: event.pointerId, x: event.clientX,
+          start: Number(draft[key]) || 0,
+          width: rail.getBoundingClientRect().width
+        };
+        try { anchor.setPointerCapture(event.pointerId); } catch (_error) { /* optional */ }
+      });
+      anchor.addEventListener("pointermove", event => {
+        const drag = this.#anchorDrag;
+        if (!drag || drag.key !== key || drag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const draft = this.#readPanelConfig();
+        if (!draft) return;
+        const target = drag.start + (event.clientX - drag.x) / Math.max(1, drag.width)
+          * duration * (event.shiftKey ? 0.05 : 1);
+        applyValue(constrainAnchorTime(key, target, draft, duration));
+      });
+      anchor.addEventListener("pointerup", event => { event.stopPropagation(); clearDrag(event); });
+      anchor.addEventListener("pointercancel", clearDrag);
+      anchor.addEventListener("lostpointercapture", clearDrag);
+      anchor.addEventListener("keydown", event => {
+        if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        const draft = this.#readPanelConfig();
+        if (!draft) return;
+        const delta = (event.shiftKey ? 0.01 : 0.001)
+          * (["ArrowRight", "ArrowUp"].includes(event.key) ? 1 : -1);
+        const target = event.key === "Home" ? 0 : event.key === "End" ? duration : Number(draft[key]) + delta;
+        applyValue(constrainAnchorTime(key, target, draft, duration));
+      });
+      anchor.addEventListener("click", event => { event.preventDefault(); event.stopPropagation(); });
+    }
   }
 
   async #commitSeek({playlist, sound, duration, progress}) {
@@ -617,6 +716,39 @@ export class EnhancedAudioPlayerUI {
     timeline.toggleAttribute("data-has-intro", range.introEnabled);
     timeline.toggleAttribute("data-has-loop", range.loopEnabled);
     timeline.toggleAttribute("data-has-base", !range.introEnabled && !range.loopEnabled && range.start > 0);
+
+    const lanes = panel.querySelector("[data-eap-editor-lanes]");
+    if (lanes) {
+      for (const [name, active, a, b] of [
+        ["intro", range.introEnabled, range.introStart, range.introEnd],
+        ["loop", range.loopEnabled, range.loopStart, range.loopEnd]
+      ]) {
+        const lane = lanes.querySelector(`[data-eap-edit-lane='${name}']`);
+        if (!lane) continue;
+        lane.hidden = !active;
+        const rail = lane.querySelector("[data-eap-anchor-rail]");
+        if (rail) {
+          const left = clamp(a, 0, duration) / duration * 100;
+          const right = clamp(b, 0, duration) / duration * 100;
+          rail.style.setProperty("--eap-edit-left", `${left}%`);
+          rail.style.setProperty("--eap-edit-width", `${Math.max(0, right - left)}%`);
+        }
+        const startHandle = lane.querySelector(`[data-eap-anchor='${name}Start']`);
+        const endHandle = lane.querySelector(`[data-eap-anchor='${name}End']`);
+        if (startHandle) {
+          startHandle.style.left = pct(a);
+          startHandle.title = `${name === "intro" ? localize("EAP.IntroStart") : localize("EAP.LoopStart")}: ${formatTime(a)}`;
+          startHandle.setAttribute("aria-valuenow", String(Math.round(a * 1000)));
+          startHandle.setAttribute("aria-valuemax", String(Math.round(duration * 1000)));
+        }
+        if (endHandle) {
+          endHandle.style.left = pct(b);
+          endHandle.title = `${name === "intro" ? localize("EAP.IntroEnd") : localize("EAP.LoopEnd")}: ${formatTime(b)}`;
+          endHandle.setAttribute("aria-valuenow", String(Math.round(b * 1000)));
+          endHandle.setAttribute("aria-valuemax", String(Math.round(duration * 1000)));
+        }
+      }
+    }
 
     const first = panel.querySelector("[data-eap-marker-start-label]");
     const second = panel.querySelector("[data-eap-marker-end-label]");
@@ -817,11 +949,31 @@ export class EnhancedAudioPlayerUI {
           <input type="range" data-eap-progress min="0" max="${duration}" step="0.01" value="${clamp(current, 0, duration)}" ${canPlay ? "" : "disabled"}>
         </div>
         <div class="eap-marker-labels"><span data-eap-marker-start-label></span><span data-eap-marker-end-label></span></div>
+        <div class="eap-editor-lanes" data-eap-editor-lanes>
+          ${editLane("intro", "EAP.IntroRail", "EAP.IntroStart", "EAP.IntroEnd", config.introEnabled)}
+          ${editLane("loop", "EAP.LoopRail", "EAP.LoopStart", "EAP.LoopEnd", config.loopEnabled)}
+        </div>
       </div>
       <div class="eap-footer-actions"><button type="button" class="eap-reset" data-eap-action="reset"><i class="fa-solid fa-rotate-left"></i> ${escapeHtml(localize("EAP.ResetTrack"))}</button></div>
     `;
   }
 
+}
+
+/** Compact independent editing tracks below the playback timeline. */
+function editLane(name, labelKey, startKey, endKey, visible) {
+  const handle = (edge, titleKey) => `<button type="button" class="eap-anchor eap-anchor-${edge}"
+    data-eap-anchor="${name}${edge === "start" ? "Start" : "End"}"
+    role="slider" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="0"
+    aria-valuenow="0" aria-label="${escapeHtml(localize(titleKey))}"
+    title="${escapeHtml(localize(titleKey))}"></button>`;
+  return `<div class="eap-edit-lane eap-edit-lane-${name}" data-eap-edit-lane="${name}" ${visible ? "" : "hidden"}>
+    <span class="eap-edit-label">${escapeHtml(localize(labelKey))}</span>
+    <div class="eap-anchor-rail" data-eap-anchor-rail="${name}">
+      <span class="eap-anchor-fill" aria-hidden="true"></span>
+      ${handle("start", startKey)}${handle("end", endKey)}
+    </div>
+  </div>`;
 }
 
 function changedConfigKeys(previous, next) {
@@ -899,6 +1051,37 @@ function insertAtSelection(input, text) {
   const start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
   const end = Number.isInteger(input.selectionEnd) ? input.selectionEnd : start;
   input.setRangeText(text, start, end, "end");
+}
+
+/** Numeric rolling millisecond mask. Key 5000 => 00:05.000. */
+export function shiftMaskedTime(current, key, {replace = false} = {}) {
+  const parsed = replace ? 0 : parseTime(current);
+  const currentMs = Math.max(0, Math.round((Number.isFinite(parsed) ? parsed : 0) * 1000));
+  if (key === "backspace") return Math.floor(currentMs / 10) / 1000;
+  if (!/^[0-9]$/.test(String(key))) return currentMs / 1000;
+  const result = currentMs * 10 + Number(key);
+  return Number.isSafeInteger(result) ? result / 1000 : currentMs / 1000;
+}
+
+/** Clipboard accepts formatted MM:SS.mmm and raw mask digits. */
+export function parsePastedTime(text) {
+  const value = String(text ?? "").trim();
+  if (/^\d+$/.test(value)) return Number(value) / 1000;
+  return parseTime(value);
+}
+
+/** Clamps an edited handle to the full-track scale and keeps its own pair
+ *  ordered by at least one millisecond. Other segments may overlap freely. */
+export function constrainAnchorTime(key, target, config, duration) {
+  const maxMs = Math.max(0, Math.round(Number(duration) * 1000));
+  const other = key.endsWith("Start") ? key.replace(/Start$/, "End") : key.replace(/End$/, "Start");
+  const otherMs = Math.max(0, Math.round(Number(config[other]) * 1000));
+  const requestedMs = Math.round(Number(target) * 1000);
+  const isStart = key.endsWith("Start");
+  const min = isStart ? 0 : otherMs + 1;
+  const max = isStart ? otherMs - 1 : maxMs;
+  if (!Number.isFinite(requestedMs) || max < min) return Math.max(0, Number(config[key]) || 0);
+  return Math.min(Math.max(requestedMs, min), max) / 1000;
 }
 
 export function formatTime(seconds) {
